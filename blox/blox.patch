@@ -1,0 +1,2662 @@
+From 361de58361b5449d2f2238d0c4c98fd83607414b Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Mon, 27 Apr 2015 05:07:40 -0700
+Subject: [PATCH] Adding Patch for Blox
+
+---
+ action.c                       |    4 +-
+ forward.c                      |    6 +-
+ forward.h                      |   27 ++-
+ modules/b2b_entities/dlg.c     |    2 +-
+ modules/dialog/dialog.c        |   71 ++++
+ modules/dialog/dlg_hash.h      |    2 +
+ modules/dialog/dlg_tophiding.c |  742 ++++++++++++++++++++++++++++++++++++
+ modules/dialog/dlg_tophiding.h |    5 +
+ modules/nathelper/nathelper.c  |    4 +-
+ modules/regex/regex_mod.c      |   33 ++-
+ modules/rtpproxy/rtpproxy.c    |  811 +++++++++++++++++++++++++++++++++++++++-
+ modules/rtpproxy/rtpproxy.h    |    1 +
+ modules/seas/seas_action.c     |    2 +-
+ modules/siptrace/siptrace.c    |    4 +-
+ modules/sl/sl_funcs.c          |    2 +-
+ modules/tm/t_funcs.c           |    8 +-
+ modules/tm/t_funcs.h           |   14 +-
+ modules/tm/t_reply.c           |    2 +-
+ msg_translator.c               |   36 +-
+ msg_translator.h               |    2 +-
+ parser/parse_to.c              |   40 ++
+ parser/parse_to.h              |    3 +
+ receive.c                      |   20 +-
+ script_cb.c                    |  105 ++++++
+ script_cb.h                    |   22 ++
+ scripts/opensipsctl            |   11 +-
+ transformations.c              |   33 ++
+ transformations.h              |    2 +-
+ 28 files changed, 1960 insertions(+), 54 deletions(-)
+
+diff --git a/action.c b/action.c
+index 550bad5..0ddc763 100644
+--- a/action.c
++++ b/action.c
+@@ -572,11 +572,11 @@ int do_action(struct action* a, struct sip_msg* msg)
+ 					memcpy(tmp + len + name_s.len,
+ 							msg->buf + len, msg->len - len);
+ 					ret = msg_send(0/*send_sock*/, p->proto, to, 0/*id*/,
+-							tmp, msg->len + name_s.len);
++							tmp, msg->len + name_s.len, msg);
+ 					pkg_free(tmp);
+ 				} else {
+ 					ret = msg_send(0/*send_sock*/, p->proto, to, 0/*id*/,
+-							msg->buf, msg->len);
++							msg->buf, msg->len, msg);
+ 				}
+ 				if (ret!=0 && p->host.h_addr_list[p->addr_idx+1])
+ 					p->addr_idx++;
+diff --git a/forward.c b/forward.c
+index 736f647..78bb8ad 100644
+--- a/forward.c
++++ b/forward.c
+@@ -441,7 +441,7 @@ int forward_request( struct sip_msg* msg, struct proxy_l * p)
+ 		LM_DBG("orig. len=%d, new_len=%d, proto=%d\n",
+ 			msg->len, len, p->proto );
+ 
+-		if (msg_send(send_sock, p->proto, &to, 0, buf, len)<0){
++		if (msg_send(send_sock, p->proto, &to, 0, buf, len, msg)<0){
+ 			ser_error=E_SEND;
+ 			continue;
+ 		}
+@@ -615,13 +615,13 @@ int forward_reply(struct sip_msg* msg)
+ 
+ 	send_sock = get_send_socket(msg, to, proto);
+ 
+-	new_buf = build_res_buf_from_sip_res( msg, &new_len, send_sock);
++	new_buf = build_res_buf_from_sip_res( msg, &new_len, send_sock, 0);
+ 	if (!new_buf){
+ 		LM_ERR("failed to build rpl from req failed\n");
+ 		goto error;
+ 	}
+ 
+-	if (msg_send(send_sock, proto, to, id, new_buf, new_len)<0) {
++	if (msg_send(send_sock, proto, to, id, new_buf, new_len, msg)<0) {
+ 		update_stat( drp_rpls, 1);
+ 		goto error0;
+ 	}
+diff --git a/forward.h b/forward.h
+index 4e7d900..62ddbcf 100644
+--- a/forward.h
++++ b/forward.h
+@@ -53,6 +53,10 @@
+ #include "sctp_server.h"
+ #endif
+ 
++#include "script_cb.h"
++
++#include "mem/mem.h"
++
+ 
+ struct socket_info* get_send_socket(struct sip_msg* msg,
+ 									union sockaddr_union* su, int proto);
+@@ -90,8 +94,10 @@ int forward_reply( struct sip_msg* msg);
+  */
+ static inline int msg_send( struct socket_info* send_sock, int proto,
+ 							union sockaddr_union* to, int id,
+-							char* buf, int len)
++							char* buf, int len, struct sip_msg *msg)
+ {
++        str out_buff;
++
+ 	if (send_sock==0)
+ 		send_sock=get_send_socket(0, to, proto);
+ 	if (send_sock==0){
+@@ -99,8 +105,19 @@ static inline int msg_send( struct socket_info* send_sock, int proto,
+ 		goto error;
+ 	}
+ 
++        out_buff.len = len;
++        out_buff.s = buf;
++
++        /* the raw processing callbacks are free to change whatever inside the buffer
++        further use out_buff.s and at the end try to free out_buff.s
++        if changed by callbacks */
++        run_post_raw_processing_cb(POST_RAW_PROCESSING,&out_buff, msg);
++        /* update the length for further processing */
++
++        len = out_buff.len;
++
+ 	if (proto==PROTO_UDP){
+-		if (udp_send(send_sock, buf, len, to)==-1){
++		if (udp_send(send_sock, out_buff.s, out_buff.len, to)==-1){
+ 			LM_ERR("udp_send failed\n");
+ 			goto error;
+ 		}
+@@ -112,7 +129,7 @@ static inline int msg_send( struct socket_info* send_sock, int proto,
+ 					" support is disabled\n");
+ 			goto error;
+ 		}else{
+-			if (tcp_send(send_sock, proto, buf, len, to, id)<0){
++			if (tcp_send(send_sock, proto, out_buff.s, out_buff.len, to, id)<0){
+ 				LM_ERR("tcp_send failed\n");
+ 				goto error;
+ 			}
+@@ -125,7 +142,7 @@ static inline int msg_send( struct socket_info* send_sock, int proto,
+ 					" support is disabled\n");
+ 			goto error;
+ 		}else{
+-			if (tcp_send(send_sock, proto, buf, len, to, id)<0){
++			if (tcp_send(send_sock, proto, out_buff.s, out_buff.len, to, id)<0){
+ 				LM_ERR("tcp_send failed\n");
+ 				goto error;
+ 			}
+@@ -140,7 +157,7 @@ static inline int msg_send( struct socket_info* send_sock, int proto,
+ 					" support is disabled\n");
+ 			goto error;
+ 		}else{
+-			if (sctp_server_send(send_sock, buf, len, to)<0){
++			if (sctp_server_send(send_sock, out_buff.s, out_buff.len, to)<0){
+ 				LM_ERR("sctp_send failed\n");
+ 				goto error;
+ 			}
+diff --git a/modules/b2b_entities/dlg.c b/modules/b2b_entities/dlg.c
+index 5e4be4f..3aaaeee 100644
+--- a/modules/b2b_entities/dlg.c
++++ b/modules/b2b_entities/dlg.c
+@@ -2824,7 +2824,7 @@ int b2b_apply_lumps(struct sip_msg* msg)
+ 			msg->rcv.bind_address, msg->rcv.proto, MSG_TRANS_NOVIA_FLAG );
+ 	else
+ 		obuf.s = build_res_buf_from_sip_res(msg, (unsigned int*)&obuf.len,
+-			msg->rcv.bind_address);
++			msg->rcv.bind_address,0);
+ 
+ 	if (!obuf.s) {
+ 		LM_ERR("no more shm mem\n");
+diff --git a/modules/dialog/dialog.c b/modules/dialog/dialog.c
+index d906014..c536d99 100644
+--- a/modules/dialog/dialog.c
++++ b/modules/dialog/dialog.c
+@@ -119,6 +119,12 @@ extern int last_dst_leg;
+ /* cachedb stuff */
+ str cdb_url = {0,0};
+ 
++/* topo hiding */
++str topo_hiding_ct_params = {0,0};
++str topo_hiding_ct_hdr_params = {0,0};
++str topo_hiding_prefix = str_init("DLGCH_");
++str topo_hiding_seed = str_init("OpenSIPS");
++
+ /* dialog replication using the bpi interface */
+ int accept_replicated_dlg=0;
+ struct replication_dest *replication_dests=NULL;
+@@ -166,6 +172,7 @@ int pv_set_dlg_flags(struct sip_msg *msg, pv_param_t *param, int op,
+ 		pv_value_t *val);
+ int pv_set_dlg_timeout(struct sip_msg *msg, pv_param_t *param, int op,
+ 		pv_value_t *val);
++int pv_get_dlg_callee_callid(struct sip_msg *msg, pv_param_t *param, pv_value_t *res);
+ 
+ static cmd_export_t cmds[]={
+ 	{"create_dialog", (cmd_function)w_create_dialog,      0,NULL,
+@@ -276,6 +283,9 @@ static param_export_t mod_params[]={
+ 	{ "accept_replicated_dialogs",INT_PARAM, &accept_replicated_dlg },
+ 	{ "replicate_dialogs_to",     STR_PARAM|USE_FUNC_PARAM,
+ 								(void *)add_replication_dest        },
++	/* dialog topology hiding with callid mangling */
++	{ "th_callid_passwd",  STR_PARAM, &topo_hiding_seed.s    },
++	{ "th_callid_prefix",STR_PARAM, &topo_hiding_prefix.s  },
+ 	{ 0,0,0 }
+ };
+ 
+@@ -644,6 +654,16 @@ static int mod_init(void)
+ 	sflags_column.len = strlen(sflags_column.s);
+ 	flags_column.len = strlen(flags_column.s);
+ 	dialog_table_name.len = strlen(dialog_table_name.s);
++	topo_hiding_prefix.len = strlen(topo_hiding_prefix.s);
++	topo_hiding_seed.len = strlen(topo_hiding_seed.s);
++	if (topo_hiding_ct_params.s) {
++		topo_hiding_ct_params.len = strlen(topo_hiding_ct_params.s);
++		dlg_parse_passed_ct_params(&topo_hiding_ct_params);
++	}
++	if (topo_hiding_ct_hdr_params.s) {
++		topo_hiding_ct_hdr_params.len = strlen(topo_hiding_ct_hdr_params.s);
++		dlg_parse_passed_hdr_ct_params(&topo_hiding_ct_hdr_params);
++	}
+ 
+ 	/* param checkings */
+ 
+@@ -832,6 +852,17 @@ static int mod_init(void)
+ 	mark_dlg_loaded_callbacks_run();
+ 	destroy_cachedb(0);
+ 
++	/* set dlg topo hiding callid mangling callbacks ( pre * post ) */
++	if (register_pre_raw_processing_cb(dlg_th_pre_raw, PRE_RAW_PROCESSING, 0/*no free*/) < 0) {
++		LM_ERR("failed to initialize pre raw support\n");
++		return -1;
++	}
++
++	if (register_post_raw_processing_cb(dlg_th_post_raw, POST_RAW_PROCESSING, 0/*no free*/) < 0) {
++		LM_ERR("failed to initialize post raw support\n");
++		return -1;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1646,3 +1677,43 @@ static int add_replication_dest(modparam_t type, void *val)
+ 	return 1;
+ }
+ 
++static char *callid_buf=NULL;
++static int callid_buf_len=0;
++int pv_get_dlg_callee_callid(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
++{
++	struct dlg_cell *dlg;
++	int req_len = 0,i;
++
++	if(res==NULL)
++		return -1;
++
++	if ( (dlg=get_current_dialog())==NULL || (dlg->flags & DLG_FLAG_TOPH_HIDE_CALLID) == 0) {
++		return pv_get_null( msg, param, res);
++	}
++
++
++	req_len = calc_base64_encode_len(dlg->callid.len) + topo_hiding_prefix.len;
++
++	if (req_len*2 > callid_buf_len) {
++		callid_buf = pkg_realloc(callid_buf,req_len*2);
++		if (callid_buf == NULL) {
++			LM_ERR("No more pkg\n");
++			return pv_get_null( msg, param, res);
++		}
++
++		callid_buf_len = req_len*2;
++	}
++
++	memcpy(callid_buf+req_len,topo_hiding_prefix.s,topo_hiding_prefix.len);
++	for (i=0;i<dlg->callid.len;i++)
++		callid_buf[i] = dlg->callid.s[i] ^ topo_hiding_seed.s[i%topo_hiding_seed.len];
++
++	base64encode((unsigned char *)(callid_buf+topo_hiding_prefix.len+req_len),
++		     (unsigned char *)(callid_buf),dlg->callid.len);
++
++	res->rs.s = callid_buf+req_len;
++	res->rs.len = req_len;
++	res->flags = PV_VAL_STR;
++
++	return 0;
++}
+diff --git a/modules/dialog/dlg_hash.h b/modules/dialog/dlg_hash.h
+index 8f7a172..76dee8a 100644
+--- a/modules/dialog/dlg_hash.h
++++ b/modules/dialog/dlg_hash.h
+@@ -73,6 +73,8 @@
+ #define DLG_FLAG_VP_CHANGED		(1<<8)
+ #define DLG_FLAG_DB_DELETED		(1<<9)
+ #define DLG_FLAG_TOPH_KEEP_USER	(1<<10)
++#define DLG_FLAG_TOPH_HIDE_CALLID	(1<<11)
++#define DLG_FLAG_TOPH_HIDE_REFERTO      (1<<12)
+ 
+ #define DLG_CALLER_LEG         0
+ #define DLG_FIRST_CALLEE_LEG   1
+diff --git a/modules/dialog/dlg_tophiding.c b/modules/dialog/dlg_tophiding.c
+index 4b75681..fc57a05 100644
+--- a/modules/dialog/dlg_tophiding.c
++++ b/modules/dialog/dlg_tophiding.c
+@@ -38,9 +38,14 @@
+ #include "dlg_tophiding.h"
+ #include "dlg_handlers.h"
+ 
++#include "../../strcommon.h"
++
+ extern struct tm_binds d_tmb;
+ extern str rr_param;
+ 
++extern str topo_hiding_prefix;
++extern str topo_hiding_seed;
++
+ #define RECORD_ROUTE "Record-Route: "
+ #define RECORD_ROUTE_LEN (sizeof(RECORD_ROUTE)-1)
+ 
+@@ -76,6 +81,62 @@ int dlg_del_vias(struct sip_msg* req)
+ 	return 0;
+ }
+ 
++struct th_ct_params {
++	str param_name;
++	struct th_ct_params *next;
++};
++
++#define init_new_ct_node(start,len,list) \
++	do { \
++		el = pkg_malloc(sizeof(struct th_ct_params));\
++		if (!el) { \
++			LM_ERR("No more pkg mem\n"); \
++			return -1; \
++		} \
++		el->param_name.len = len; \
++		el->param_name.s = start; \
++		el->next = *list; \
++		*list = el; \
++	} while (0)
++
++struct th_ct_params *th_param_list=NULL;
++struct th_ct_params *th_hdr_param_list=NULL;
++int dlg_parse_passed_params(str *params,struct th_ct_params **lst)
++{
++	char *p,*s,*end;
++	struct th_ct_params* el;
++	int len;
++
++	p = params->s;
++	end = p+params->len;
++	while (1) {
++		s = memchr(p,';',end-p);
++		if (!s) {
++			len = end-p;
++			if (len > 0)
++				init_new_ct_node(p,len,lst);
++			break;
++		}
++
++		len = s-p;
++		if (len > 0)
++			init_new_ct_node(p,len,lst);
++		p=s+1;
++	}
++
++	return 0;
++}
++
++int dlg_parse_passed_ct_params(str *params)
++{
++	return dlg_parse_passed_params(params,&th_param_list);
++}
++
++int dlg_parse_passed_hdr_ct_params(str *params)
++{
++	return dlg_parse_passed_params(params,&th_hdr_param_list);
++}
++
+ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ {
+ 	struct lump* lump, *crt, *prev_crt =0, *a, *foo;
+@@ -85,6 +146,9 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 	int prefix_len,suffix_len,ct_username_len=0;
+ 	struct sip_uri ctu;
+ 	str contact;
++	struct th_ct_params* el;
++	int i;
++	param_t *it;
+ 
+ 	if(!msg->contact)
+ 	{
+@@ -126,6 +190,56 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 	}
+ 
+ 	suffix_len = RR_DLG_PARAM_SIZE+1; /* > */
++	if (th_param_list) {
++		if ( parse_contact(msg->contact)<0 ||
++			((contact_body_t *)msg->contact->parsed)->contacts==NULL ||
++			((contact_body_t *)msg->contact->parsed)->contacts->next!=NULL ) {
++			LM_ERR("bad Contact HDR\n");
++		} else {
++			contact = ((contact_body_t *)msg->contact->parsed)->contacts->uri;
++			if(parse_uri(contact.s, contact.len, &ctu) < 0) {
++				LM_ERR("Bad Contact URI\n");
++			} else {
++				for (el=th_param_list;el;el=el->next) {
++					/* we just iterate over the unknown params */
++					for (i=0;i<ctu.u_params_no;i++) {
++						if (el->param_name.len == ctu.u_name[i].len &&
++						(memcmp(el->param_name.s,ctu.u_name[i].s,
++						       el->param_name.len) == 0)) {
++							if (ctu.u_val[i].len)
++								suffix_len += 1 /* ; */ + ctu.u_name[i].len +
++								ctu.u_val[i].len + 1; /* = and value */
++							else
++								suffix_len += 1 /* ; */ + ctu.u_name[i].len;
++						}
++
++					}
++				}
++			}
++		}
++	}
++
++	if (th_hdr_param_list) {
++		if ( parse_contact(msg->contact)<0 ||
++			((contact_body_t *)msg->contact->parsed)->contacts==NULL ||
++			((contact_body_t *)msg->contact->parsed)->contacts->next!=NULL ) {
++			LM_ERR("bad Contact HDR\n");
++		} else {
++			for (el=th_hdr_param_list;el;el=el->next) {
++				for (it=((contact_body_t *)msg->contact->parsed)->contacts->params;it;it=it->next) {
++					if (it->name.len == el->param_name.len &&
++					(memcmp(it->name.s,el->param_name.s,it->name.len) == 0)) {
++						if (it->body.len)
++							suffix_len += 1 /* ; */ + it->name.len +
++							it->body.len + 1; /* = and value */
++						else
++							suffix_len += 1 /* ; */ + it->name.len;
++					}
++				}
++			}
++		}
++	}
++
+ 	suffix = pkg_malloc(suffix_len);
+ 	if (!suffix) {
+ 		LM_ERR("no more pkg\n");
+@@ -154,7 +268,50 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 	if (int2reverse_hex( &p, &n, dlg->h_id)==-1)
+ 		return -1;
+ 
++	if (th_param_list) {
++		for (el=th_param_list;el;el=el->next) {
++			/* we just iterate over the unknown params */
++			for (i=0;i<ctu.u_params_no;i++) {
++				if (el->param_name.len == ctu.u_name[i].len &&
++				memcmp(el->param_name.s,ctu.u_name[i].s,
++				       el->param_name.len) == 0) {
++					*p++ = ';';
++					memcpy(p,ctu.u_name[i].s,ctu.u_name[i].len);
++					p+=ctu.u_name[i].len;
++					if (ctu.u_val[i].len) {
++						*p++ = '=';
++						memcpy(p,ctu.u_val[i].s,ctu.u_val[i].len);
++						p+=ctu.u_val[i].len;
++					}
++				}
++			}
++		}
++	}
++
+ 	*p++ = '>';
++	if (th_hdr_param_list) {
++		if ( parse_contact(msg->contact)<0 ||
++			((contact_body_t *)msg->contact->parsed)->contacts==NULL ||
++			((contact_body_t *)msg->contact->parsed)->contacts->next!=NULL ) {
++			LM_ERR("bad Contact HDR\n");
++		} else {
++			for (el=th_hdr_param_list;el;el=el->next) {
++				for (it=((contact_body_t *)msg->contact->parsed)->contacts->params;it;it=it->next) {
++					if (it->name.len == el->param_name.len &&
++					(memcmp(it->name.s,el->param_name.s,it->name.len) == 0)) {
++						*p++ = ';';
++						memcpy(p,it->name.s,it->name.len);
++						p += it->name.len;
++						if (it->body.len) {
++							*p++ = '=';
++							memcpy(p,it->body.s,it->body.len);
++							p += it->body.len;
++						}
++					}
++				}
++			}
++		}
++	}
+ 	suffix_len = p - p_init;
+ 
+ 	offset = msg->contact->body.s - msg->buf;
+@@ -645,6 +802,14 @@ int w_topology_hiding1(struct sip_msg *req,char *param)
+ 				flags |= DLG_FLAG_TOPH_KEEP_USER;
+ 				LM_DBG("Will preserve usernames while doing topo hiding \n");
+ 				break;
++			case 'C':
++				flags |= DLG_FLAG_TOPH_HIDE_CALLID;
++				LM_DBG("Will change callid while doing topo hiding\n");
++				break;
++			case 'R':
++				flags |= DLG_FLAG_TOPH_HIDE_REFERTO;
++				LM_DBG("Will change refer-to while doing topo hiding\n");
++				break;
+ 			default:
+ 				LM_DBG("unknown topology_hiding flag : [%c] . Skipping\n",*p);
+ 		}
+@@ -734,3 +899,580 @@ int dlg_th_onroute(struct dlg_cell *dlg, struct sip_msg *req, int dir)
+ 
+ 	return 0;
+ }
++
++int dlg_th_decode_referto(struct sip_msg *msg)
++{
++	struct lump *del;
++	int i,max_size;
++	char *replaces_end = NULL;
++	char *replaces_start = NULL;
++	str new_replaces_callid;
++	str new_referto ;
++	str escape_replaces_callid = {NULL,0};
++	str replaces_callid = {NULL,0};
++
++	if(msg->refer_to) {
++		LM_DBG("message with no referto\n");
++		return -1;
++	}
++
++	replaces_start = strstr(msg->refer_to->body.s,"Replaces=") ;
++	if(!replaces_start) {
++		LM_DBG("message with no referto replaces\n");
++		return -1;
++	}
++	replaces_start += strlen("Replaces=");
++
++	if(!(replaces_end=strstr(replaces_start,"%3B"))) { /* %3B = ';' */
++		replaces_end = msg->refer_to->body.s + msg->refer_to->body.len;
++	}
++	
++	if(replaces_end) {
++		escape_replaces_callid.len = replaces_end - replaces_start ;
++	} else {
++		escape_replaces_callid.len = msg->refer_to->body.len - (replaces_start - msg->refer_to->body.s) ;
++	}
++
++	escape_replaces_callid.s = pkg_malloc(escape_replaces_callid.len);
++	if(escape_replaces_callid.s==NULL) {
++		LM_ERR("failed to encode refer-to callid\n");
++	}
++	
++	replaces_callid.len = escape_replaces_callid.len + 1;
++	replaces_callid.s = pkg_malloc(replaces_callid.len);
++	if (replaces_callid.s==NULL) {
++		pkg_free(escape_replaces_callid.s);	
++		LM_ERR("failed to encode refer-to callid\n");
++		return -1;
++	}
++	unescape_user(&escape_replaces_callid,&replaces_callid);
++	
++	max_size = calc_max_base64_decode_len(replaces_callid.len - topo_hiding_prefix.len);
++	new_replaces_callid.s = pkg_malloc(max_size);
++	if(new_replaces_callid.s) {
++		pkg_free(replaces_callid.s);
++		pkg_free(escape_replaces_callid.s);	
++		LM_ERR("failed to encode refer-to callid\n");
++		return -1;
++	}
++
++	new_replaces_callid.len = base64decode((unsigned char *)(new_replaces_callid.s),
++			(unsigned char *)(replaces_callid.s + topo_hiding_prefix.len),
++			replaces_callid.len - topo_hiding_prefix.len);
++
++	for (i=0;i<new_replaces_callid.len;i++)
++		new_replaces_callid.s[i] ^= topo_hiding_seed.s[i%topo_hiding_seed.len];
++
++	/* Release the old escape_replaces_callid and create with newly created new_replaces_callid */
++	pkg_free(escape_replaces_callid.s) ;
++	escape_replaces_callid.len = 3*new_replaces_callid.len+1;
++
++	escape_replaces_callid.s = pkg_malloc(escape_replaces_callid.len);
++	if(escape_replaces_callid.s == NULL) {
++		pkg_free(replaces_callid.s);
++		pkg_free(new_replaces_callid.s);
++		LM_ERR("no more pkg\n");
++		return -1;
++	}
++
++	escape_user(&new_replaces_callid,&escape_replaces_callid);
++
++	new_referto.len = replaces_start - msg->refer_to->body.s;
++	new_referto.len += escape_replaces_callid.len ;
++	new_referto.len += msg->refer_to->body.len - (replaces_end - msg->refer_to->body.s);
++	new_referto.s = pkg_malloc(new_referto.len);
++	if(new_referto.s==NULL) {
++		pkg_free(replaces_callid.s);
++		pkg_free(escape_replaces_callid.s);
++		pkg_free(new_replaces_callid.s);
++		LM_ERR("no more pkg\n");
++		return -1;
++	}
++	
++	memcpy(new_referto.s,msg->refer_to->body.s,replaces_start - msg->refer_to->body.s);
++	memcpy(new_referto.s+(replaces_start-msg->refer_to->body.s),escape_replaces_callid.s,escape_replaces_callid.len);
++	memcpy(new_referto.s+(replaces_start-msg->refer_to->body.s)+escape_replaces_callid.len,replaces_end,msg->refer_to->body.len-(replaces_end-msg->refer_to->body.s));
++	
++	LM_DBG("Changing refer-to %.*s => %.*s\n", msg->refer_to->body.len, msg->refer_to->body.s, new_referto.len, new_referto.s ) ;
++	del=del_lump(msg, msg->refer_to->body.s-msg->buf, msg->refer_to->body.len, HDR_REFER_TO_T);
++	if (del==NULL) {
++		LM_ERR("Failed to delete old refer_to\n");
++		pkg_free(new_referto.s);
++		return -1;
++	}
++
++	if (insert_new_lump_after(del,new_referto.s,new_referto.len,HDR_REFER_TO_T)==NULL) {
++		LM_ERR("Failed to insert new referto\n");
++		pkg_free(new_referto.s);
++		return -1;
++	}
++
++	return 0;
++}
++
++
++int dlg_th_encode_referto(struct sip_msg *msg)
++{
++	struct lump *del;
++	char *replaces_end = NULL;
++	char *replaces_start = NULL;
++	int i;
++	str new_replaces_callid;
++	str new_referto ;
++	str escape_replaces_callid = {NULL,0};
++	str replaces_callid = {NULL,0};
++
++	if(!msg->refer_to) {
++		LM_DBG("message with no referto\n");
++		return -1;
++	}
++
++	replaces_start = strstr(msg->refer_to->body.s,"Replaces=") ;
++	if(!replaces_start) {
++		LM_DBG("message with no referto replaces\n");
++		return -1;
++	}
++	replaces_start += strlen("Replaces=");
++
++	if(!(replaces_end=strstr(replaces_start,"%3B"))) { /* %3B = ';' */
++		replaces_end = msg->refer_to->body.s + msg->refer_to->body.len;
++	}
++	
++	if(replaces_end) {
++		escape_replaces_callid.len = replaces_end - replaces_start ;
++	} else {
++		escape_replaces_callid.len = msg->refer_to->body.len - (replaces_start - msg->refer_to->body.s) ;
++	}
++
++	escape_replaces_callid.s = pkg_malloc(escape_replaces_callid.len);
++	if(escape_replaces_callid.s==NULL) {
++		LM_ERR("failed to encode refer-to callid\n");
++	}
++	memcpy(escape_replaces_callid.s,replaces_start,escape_replaces_callid.len);
++	
++	replaces_callid.len = escape_replaces_callid.len + 1;
++	replaces_callid.s = pkg_malloc(replaces_callid.len);
++	if (replaces_callid.s==NULL) {
++		pkg_free(escape_replaces_callid.s);	
++		LM_ERR("failed to encode refer-to callid\n");
++		return -1;
++	}
++	unescape_user(&escape_replaces_callid,&replaces_callid);
++	
++	new_replaces_callid.len = calc_base64_encode_len(replaces_callid.len);
++	new_replaces_callid.len += topo_hiding_prefix.len;
++	new_replaces_callid.s = pkg_malloc(new_replaces_callid.len);
++	if (new_replaces_callid.s==NULL) {
++		pkg_free(replaces_callid.s);	
++		pkg_free(escape_replaces_callid.s);	
++		LM_ERR("failed to encode refer-to callid\n");
++		return -1;
++	}
++	
++	memcpy(new_replaces_callid.s,topo_hiding_prefix.s,topo_hiding_prefix.len);
++	for (i=0;i<replaces_callid.len;i++)
++		replaces_callid.s[i] ^= topo_hiding_seed.s[i%topo_hiding_seed.len];
++	
++	base64encode((unsigned char *)(new_replaces_callid.s+topo_hiding_prefix.len),
++		     (unsigned char *)(replaces_callid.s),replaces_callid.len);
++
++	/* Release the old escape_replaces_callid and create with newly created new_replaces_callid */
++	pkg_free(escape_replaces_callid.s) ;
++	escape_replaces_callid.len = 3*new_replaces_callid.len+1;
++
++	escape_replaces_callid.s = pkg_malloc(escape_replaces_callid.len);
++	if(escape_replaces_callid.s == NULL) {
++		pkg_free(replaces_callid.s);
++		pkg_free(new_replaces_callid.s);
++		LM_ERR("no more pkg\n");
++		return -1;
++	}
++
++	escape_user(&new_replaces_callid,&escape_replaces_callid);
++	LM_DBG("CallID %.*s => %.*s\n", new_replaces_callid.len, new_replaces_callid.s, escape_replaces_callid.len, escape_replaces_callid.s) ;
++	
++	new_referto.len = replaces_start - msg->refer_to->body.s;
++	new_referto.len += escape_replaces_callid.len ;
++	new_referto.len += msg->refer_to->body.len - (replaces_end - msg->refer_to->body.s);
++	new_referto.s = pkg_malloc(new_referto.len);
++	if(new_referto.s==NULL) {
++		pkg_free(replaces_callid.s);
++		pkg_free(escape_replaces_callid.s);
++		pkg_free(new_replaces_callid.s);
++		LM_ERR("no more pkg\n");
++		return -1;
++	}
++	
++	memcpy(new_referto.s,msg->refer_to->body.s,replaces_start - msg->refer_to->body.s);
++	memcpy(new_referto.s+(replaces_start-msg->refer_to->body.s),escape_replaces_callid.s,escape_replaces_callid.len);
++	memcpy(new_referto.s+(replaces_start-msg->refer_to->body.s)+escape_replaces_callid.len,replaces_end,msg->refer_to->body.len-(replaces_end-msg->refer_to->body.s));
++	
++	del=del_lump(msg, msg->refer_to->body.s-msg->buf, msg->refer_to->body.len, HDR_REFER_TO_T);
++	if (del==NULL) {
++		LM_ERR("failed to delete old callid\n");
++		pkg_free(replaces_callid.s);
++		pkg_free(escape_replaces_callid.s);
++		pkg_free(new_replaces_callid.s);
++		pkg_free(new_referto.s);
++		return -1;
++	}
++	
++	if (insert_new_lump_after(del,new_referto.s,new_referto.len,HDR_REFER_TO_T)==NULL) {
++		LM_ERR("failed to insert new callid\n");
++		pkg_free(replaces_callid.s);
++		pkg_free(escape_replaces_callid.s);
++		pkg_free(new_replaces_callid.s);
++		pkg_free(new_referto.s);
++		return -1;
++	}
++	pkg_free(replaces_callid.s);
++	pkg_free(escape_replaces_callid.s);
++	pkg_free(new_replaces_callid.s);
++
++	return 0;
++}
++
++int dlg_th_needs_referto_decoding(struct sip_msg *msg)
++{
++	int len_refer_to_from_replaces ;
++	str escape_replaces_callid = {NULL,0};
++
++	if (msg->refer_to==NULL) {
++		LM_DBG("Message with no refer-to\n");
++		return 0;
++	}
++
++	escape_replaces_callid.s = strstr(msg->refer_to->body.s,"Replaces=") ;
++	if(!escape_replaces_callid.s) {
++		LM_ERR("Message with no referto replaces\n");
++		return -1;
++	}
++	escape_replaces_callid.s += strlen("Replaces=");
++
++	/* len_refer_to_from_replaces remaining body length before memcmp with topo_hiding_prefix */
++	len_refer_to_from_replaces = msg->refer_to->body.len - (escape_replaces_callid.s - msg->refer_to->body.s);
++
++	if (len_refer_to_from_replaces > topo_hiding_prefix.len &&
++        memcmp(escape_replaces_callid.s,topo_hiding_prefix.s,
++	topo_hiding_prefix.len) == 0)
++		return 1;
++
++	LM_DBG("dlg_th_needs_referto_decoding: no need\n");
++	return 0;
++}
++
++
++int dlg_th_decode_callid(struct sip_msg *msg)
++{
++	struct lump *del;
++	str new_callid;
++	int i,max_size;
++
++	if (msg->callid == NULL) {
++		LM_ERR("Message with no callid\n");
++		return -1;
++	}
++
++	max_size = calc_max_base64_decode_len(msg->callid->body.len - topo_hiding_prefix.len);
++	new_callid.s = pkg_malloc(max_size);
++	if (new_callid.s==NULL) {
++		LM_ERR("No more pkg\n");
++		return -1;
++	}
++
++	new_callid.len = base64decode((unsigned char *)(new_callid.s),
++			(unsigned char *)(msg->callid->body.s + topo_hiding_prefix.len),
++			msg->callid->body.len - topo_hiding_prefix.len);
++	for (i=0;i<new_callid.len;i++)
++		new_callid.s[i] ^= topo_hiding_seed.s[i%topo_hiding_seed.len];
++
++	del=del_lump(msg, msg->callid->body.s-msg->buf, msg->callid->body.len, HDR_CALLID_T);
++	if (del==NULL) {
++		LM_ERR("Failed to delete old callid\n");
++		pkg_free(new_callid.s);
++		return -1;
++	}
++
++	if (insert_new_lump_after(del,new_callid.s,new_callid.len,HDR_CALLID_T)==NULL) {
++		LM_ERR("Failed to insert new callid\n");
++		pkg_free(new_callid.s);
++		return -1;
++	}
++
++	return 0;
++}
++
++int dlg_th_encode_callid(struct sip_msg *msg)
++{
++	struct lump *del;
++	str new_callid;
++	int i;
++
++	if (msg->callid == NULL) {
++		LM_ERR("Message with no callid\n");
++		return -1;
++	}
++
++	new_callid.len = calc_base64_encode_len(msg->callid->body.len);
++	new_callid.len += topo_hiding_prefix.len;
++	new_callid.s = pkg_malloc(new_callid.len);
++	if (new_callid.s==NULL) {
++		LM_ERR("Failed to allocate callid len\n");
++		return -1;
++	}
++
++	if (new_callid.s == NULL) {
++		LM_ERR("Failed to encode callid\n");
++		return -1;
++	}
++
++	memcpy(new_callid.s,topo_hiding_prefix.s,topo_hiding_prefix.len);
++	for (i=0;i<msg->callid->body.len;i++)
++		msg->callid->body.s[i] ^= topo_hiding_seed.s[i%topo_hiding_seed.len];
++
++	base64encode((unsigned char *)(new_callid.s+topo_hiding_prefix.len),
++		     (unsigned char *)(msg->callid->body.s),msg->callid->body.len);
++
++	/* reset the callid back to original value - some might still need it ( eg. post script )
++	FIXME : use bigger buffer here ? mem vs cpu */
++	for (i=0;i<msg->callid->body.len;i++)
++		msg->callid->body.s[i] ^= topo_hiding_seed.s[i%topo_hiding_seed.len];
++
++	del=del_lump(msg, msg->callid->body.s-msg->buf, msg->callid->body.len, HDR_CALLID_T);
++	if (del==NULL) {
++		LM_ERR("Failed to delete old callid\n");
++		pkg_free(new_callid.s);
++		return -1;
++	}
++
++	if (insert_new_lump_after(del,new_callid.s,new_callid.len,HDR_CALLID_T)==NULL) {
++		LM_ERR("Failed to insert new callid\n");
++		pkg_free(new_callid.s);
++		return -1;
++	}
++
++	return 0;
++}
++
++int dlg_th_needs_callid_decoding(struct sip_msg *msg)
++{
++	if (msg->callid == NULL) {
++		LM_ERR("Message with no callid\n");
++		return 0;
++	}
++
++	if (msg->callid->body.len > topo_hiding_prefix.len &&
++        memcmp(msg->callid->body.s,topo_hiding_prefix.s,
++	topo_hiding_prefix.len) == 0)
++		return 1;
++
++	return 0;
++}
++
++static inline char *dlg_th_rebuild_req(struct sip_msg *msg,int *len)
++{
++	return build_req_buf_from_sip_req(msg,(unsigned int*)len,
++			NULL,PROTO_NONE,MSG_TRANS_NOVIA_FLAG);
++}
++
++static inline char *dlg_th_rebuild_rpl(struct sip_msg *msg,int *len)
++{
++	return build_res_buf_from_sip_res(msg,(unsigned int*)len,
++			NULL,MSG_TRANS_NOVIA_FLAG);
++}
++
++#define MSG_SKIP_BITMASK	(METHOD_REGISTER|METHOD_PUBLISH|METHOD_NOTIFY|METHOD_SUBSCRIBE)
++int dlg_th_callid_pre_parse(struct sip_msg *msg,int want_from)
++{
++	/* do not throw errors from the upcoming parsing operations */
++	set_proc_debug_level(L_ALERT);
++
++	if (parse_msg(msg->buf,msg->len,msg)!=0) {
++		LM_ERR("Invalid SIP msg\n");
++		goto error;
++	}
++
++	if (parse_headers(msg,HDR_EOH_F,0)<0) {
++		LM_ERR("Failed to parse SIP headers\n");
++		goto error;
++	}
++
++	if (msg->cseq==NULL || get_cseq(msg)==NULL) {
++		LM_ERR("Failed to parse CSEQ header\n");
++		goto error;
++	}
++
++	if((get_cseq(msg)->method_id)&MSG_SKIP_BITMASK) {
++		LM_DBG("Skipping %d for DLG callid topo hiding\n",get_cseq(msg)->method_id);
++		goto error;
++	}
++
++	if (parse_to_header(msg)<0 || msg->to==NULL || get_to(msg)==NULL) {
++		LM_ERR("cannot parse TO header\n");
++		goto error;
++	}
++
++	if (parse_from_header(msg)<0 || msg->from==NULL || get_from(msg)==NULL) {
++		LM_ERR("cannot parse TO header\n");
++		goto error;
++	}
++
++	reset_proc_debug_level();
++	return 0;
++
++error:
++	reset_proc_debug_level();
++	return -1;
++}
++
++int dlg_th_pre_raw(str *data, struct sip_msg* foo)
++{
++	struct sip_msg msg;
++
++	memset(&msg,0,sizeof(struct sip_msg));
++	msg.buf=data->s;
++	msg.len=data->len;
++	if (dlg_th_callid_pre_parse(&msg,0) < 0)
++		goto done;
++
++	if (msg.first_line.type==SIP_REQUEST) {
++		if (get_to(&msg)->tag_value.len>0) {
++			/* sequential request, check if callid needs to be unmasked */
++			if (dlg_th_needs_callid_decoding(&msg)) {
++				if (dlg_th_decode_callid(&msg) < 0) {
++					LM_ERR("Failed to decode callid for sequential request\n");
++					goto error;
++				}
++				/* encoding REFER-TO shouldn't be by default */
++				if(!dlg_th_needs_referto_decoding(&msg)) { /* If not already encoded */
++					dlg_th_encode_referto(&msg);
++				}
++				goto rebuild_msg;
++			}
++		} else {
++			/* initial request, don't do anything
++			callid masking will be done on the out side */
++		}
++	} else if (msg.first_line.type==SIP_REPLY) {
++		/* we might need to decode callid if mangled */
++		if (dlg_th_needs_callid_decoding(&msg)) {
++			if (dlg_th_decode_callid(&msg) < 0) {
++				LM_ERR("Failed to decode callid for reply\n");
++				goto error;
++			}
++			goto rebuild_rpl;
++		} else {
++			/* encoding will be done on the out side */
++		}
++	} else {
++		/* non sip, most likely, let it through */
++		return 0;
++	}
++
++done:
++	free_sip_msg(&msg);
++	return 0;
++
++rebuild_msg:
++	data->s = dlg_th_rebuild_req(&msg,&data->len);
++	free_sip_msg(&msg);
++	return 0;
++
++rebuild_rpl:
++	data->s = dlg_th_rebuild_rpl(&msg,&data->len);
++	free_sip_msg(&msg);
++	return 0;
++error:
++	free_sip_msg(&msg);
++	return -1;
++}
++
++int dlg_th_post_raw(str *data, struct sip_msg* foo)
++{
++	struct sip_msg msg;
++	struct dlg_cell *dlg;
++
++	dlg = get_current_dialog();
++	if (dlg == NULL || (dlg->flags & DLG_FLAG_TOPH_HIDE_CALLID) == 0 ) {
++		/* dialog module not involved or not callid topo hiding
++		 - let is pass freely */
++		return 0;
++	}
++
++	memset(&msg,0,sizeof(struct sip_msg));
++	msg.buf=data->s;
++	msg.len=data->len;
++	if (dlg_th_callid_pre_parse(&msg,1) < 0)
++		goto done;
++
++	if (msg.first_line.type==SIP_REQUEST) {
++		if (get_to(&msg)->tag_value.len>0) {
++			/* sequential request, check if callid needs to be unmasked */
++			if (get_from(&msg)->tag_value.len != 0) {
++				if (memcmp(get_from(&msg)->tag_value.s,
++				dlg->legs[0].tag.s,dlg->legs[0].tag.len) == 0) {
++					/* request from caller -  need to encode callid */
++					if (dlg_th_encode_callid(&msg) < 0) {
++						LM_ERR("Failed to mask callid for initial request\n");
++						goto error;
++					}
++					if (dlg->flags & DLG_FLAG_TOPH_HIDE_REFERTO) {
++						/* encoding REFER-TO shouldn't be by default */
++						if(!dlg_th_needs_referto_decoding(&msg)) {
++							dlg_th_encode_referto(&msg);
++						}
++					}
++					goto rebuild_req;
++				} else {
++					/* let request go through - was decoded on the in side */
++				}
++			} else {
++				/* no from tag in request - kinda foobar ? - let it through */
++				goto done;
++			}
++		} else {
++			/* initial request, mask callid */
++			if (dlg_th_encode_callid(&msg) < 0) {
++				LM_ERR("Failed to mask callid for initial request\n");
++				goto error;
++			}
++			goto rebuild_req;
++		}
++	} else if (msg.first_line.type==SIP_REPLY) {
++		/* we need to look at the direction */
++		if (get_from(&msg)->tag_value.len != 0) {
++			if (memcmp(get_from(&msg)->tag_value.s,
++			dlg->legs[0].tag.s,dlg->legs[0].tag.len) == 0) {
++				/* reply going to caller -
++				decode was done on the receiving end, let it unchanged */
++			} else {
++				/* reply going to callee , need to encode callid */
++				if (dlg_th_encode_callid(&msg) < 0) {
++					LM_ERR("Failed to decode callid for reply\n");
++					goto error;
++				}
++				goto rebuild_rpl;
++			}
++		} else {
++			/* no from tag in reply - kinda foobar ? - let it through */
++			goto done;
++		}
++	}
++
++done:
++	free_sip_msg(&msg);
++	return 0;
++
++rebuild_req:
++	data->s = dlg_th_rebuild_req(&msg,&data->len);
++	free_sip_msg(&msg);
++	return 0;
++rebuild_rpl:
++	data->s = dlg_th_rebuild_rpl(&msg,&data->len);
++	free_sip_msg(&msg);
++	return 0;
++
++error:
++	free_sip_msg(&msg);
++	return -1;
++}
+diff --git a/modules/dialog/dlg_tophiding.h b/modules/dialog/dlg_tophiding.h
+index 3703779..3956aba 100644
+--- a/modules/dialog/dlg_tophiding.h
++++ b/modules/dialog/dlg_tophiding.h
+@@ -37,4 +37,9 @@ int dlg_th_onroute(struct dlg_cell *dlg, struct sip_msg *req, int dir);
+ int dlg_th_onreply(struct dlg_cell *dlg, struct sip_msg *rpl,
+ 		struct sip_msg *req,int init_req, int dir);
+ 
++int dlg_th_pre_raw(str *data, struct sip_msg* foo);
++int dlg_th_post_raw(str *data, struct sip_msg* foo);
++int dlg_parse_passed_ct_params(str *params);
++int dlg_parse_passed_hdr_ct_params(str *params);
++
+ #endif
+diff --git a/modules/nathelper/nathelper.c b/modules/nathelper/nathelper.c
+index d72abc2..5c7f103 100644
+--- a/modules/nathelper/nathelper.c
++++ b/modules/nathelper/nathelper.c
+@@ -1249,7 +1249,7 @@ nh_timer(unsigned int ticks, void *timer_idx)
+ 
+ 		if ((flags & sipping_flag) &&
+ 		    (opt.s = build_sipping(&c, send_sock, &path, &opt.len))) {
+-			if (msg_send(send_sock, next_hop.proto, &to, 0, opt.s, opt.len) < 0) {
++			if (msg_send(send_sock, next_hop.proto, &to, 0, opt.s, opt.len, NULL) < 0) {
+ 				LM_ERR("sip msg_send failed\n");
+ 			}
+ 		} else if (raw_ip && next_hop.proto == PROTO_UDP) {
+@@ -1258,7 +1258,7 @@ nh_timer(unsigned int ticks, void *timer_idx)
+ 			}
+ 		} else {
+ 			if (msg_send(send_sock, next_hop.proto, &to, 0,
+-			             (char *)sbuf, sizeof(sbuf)) < 0) {
++			             (char *)sbuf, sizeof(sbuf), NULL) < 0) {
+ 				LM_ERR("sip msg_send failed!\n");
+ 			}
+ 		}
+diff --git a/modules/regex/regex_mod.c b/modules/regex/regex_mod.c
+index 4bea02b..8ee81f1 100644
+--- a/modules/regex/regex_mod.c
++++ b/modules/regex/regex_mod.c
+@@ -120,7 +120,7 @@ static cmd_export_t cmds[] =
+ 	{ "pcre_match", (cmd_function)w_pcre_match, 2, fixup_spve_spve, 0,
+ 		REQUEST_ROUTE|FAILURE_ROUTE|ONREPLY_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE|
+ 		STARTUP_ROUTE|TIMER_ROUTE|EVENT_ROUTE},
+-	{ "pcre_match_group", (cmd_function)w_pcre_match_group, 2, fixup_spve_uint, 0,
++	{ "pcre_match_group", (cmd_function)w_pcre_match_group, 2, fixup_spve_spve, 0,
+ 		REQUEST_ROUTE|FAILURE_ROUTE|ONREPLY_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE|
+ 		STARTUP_ROUTE|TIMER_ROUTE|EVENT_ROUTE},
+ 	{ "pcre_match_group", (cmd_function)w_pcre_match_group, 1, fixup_spve_null, 0,
+@@ -173,6 +173,26 @@ struct module_exports exports = {
+ 	0                          /*!< per-child init function */
+ };
+ 
++static int regex_get_var_svalue(struct sip_msg *msg, gparam_p gp, str *val, int n)
++{
++	#define MAX_BUF  64
++	static char buf[2][MAX_BUF];
++	str tmp;
++
++	if (gp->type==GPARAM_TYPE_STR) {
++		*val = gp->v.sval;
++		return 0;
++	}
++
++	if ( fixup_get_svalue(msg, gp, &tmp)!=0 )
++		return -1;
++	val->s = buf[n];
++	val->len = (tmp.len>MAX_BUF-1) ? MAX_BUF-1 : tmp.len ;
++	memcpy(val->s,tmp.s, val->len);
++	val->s[val->len] = 0;
++	return 0;
++}
++
+ 
+ 
+ /*! \brief
+@@ -588,6 +608,7 @@ static int w_pcre_match(struct sip_msg* _msg, char* _s1, char* _s2)
+ static int w_pcre_match_group(struct sip_msg* _msg, char* _s1, char* _s2)
+ {
+ 	str string;
++	str group_id = { NULL, 0 };
+ 	int num_pcre;
+ 	int pcre_rc;
+ 
+@@ -602,10 +623,16 @@ static int w_pcre_match_group(struct sip_msg* _msg, char* _s1, char* _s2)
+ 		return -3;
+ 	}
+ 
+-	if (_s2 == NULL) {
++	if (_s2) {
++		if (regex_get_var_svalue(_msg, (gparam_p)_s2, &group_id, 1)<0) {
++			LM_ERR("bogus Group parameter\n");
++			return -1;
++		}
++	}
++	if (group_id.s == NULL) {
+ 		num_pcre = 0;
+ 	} else {
+-		num_pcre = (uint)(long)_s2;
++		sscanf(group_id.s,"%d",&num_pcre) ;
+ 	}
+ 
+ 	if (num_pcre >= *num_pcres) {
+diff --git a/modules/rtpproxy/rtpproxy.c b/modules/rtpproxy/rtpproxy.c
+index 71f0363..64a10a8 100644
+--- a/modules/rtpproxy/rtpproxy.c
++++ b/modules/rtpproxy/rtpproxy.c
+@@ -260,9 +260,11 @@ static int unforce_rtp_proxy_f(struct sip_msg *, char *, char *);
+ static int engage_rtp_proxy4_f(struct sip_msg *, char *, char *, char *, char *);
+ static int fixup_engage(void **param,int param_no);
+ static int force_rtp_proxy(struct sip_msg *, char *, char *, char *, char *, int);
++static int force_rtp_proxy2(struct sip_msg *, char *, char *, char *, char *, char *, int);
+ static int start_recording_f(struct sip_msg *, char *, char *);
+ static int rtpproxy_answer4_f(struct sip_msg *, char *, char *, char *, char *);
+ static int rtpproxy_offer4_f(struct sip_msg *, char *, char *, char *, char *);
++static int rtpproxy_offer5_f(struct sip_msg *, char *, char *, char *, char *, char *);
+ 
+ static int add_rtpproxy_socks(struct rtpp_set * rtpp_list, char * rtpproxy);
+ static int fixup_set_id(void ** param);
+@@ -446,6 +448,9 @@ static cmd_export_t cmds[] = {
+ 	{"rtpproxy_offer",        (cmd_function)rtpproxy_offer4_f,      4,
+ 		fixup_offer_answer, 0,
+ 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
++	{"rtpproxy_offer",        (cmd_function)rtpproxy_offer5_f,      5,
++		fixup_offer_answer, 0,
++		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
+ 	{"rtpproxy_answer",      (cmd_function)rtpproxy_answer4_f,      0,
+ 		0, 0,
+ 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
+@@ -530,7 +535,6 @@ static proc_export_t procs[] = {
+ 	{0,0,0,0,0,0}
+ };
+ 
+-
+ struct module_exports exports = {
+ 	"rtpproxy",
+ 	MODULE_VERSION,
+@@ -824,6 +828,8 @@ static int fixup_offer_answer(void ** param, int param_no)
+ 		return fixup_set_id(param);
+ 	if (param_no == 4)
+ 		return fixup_pvar(param);
++	if (param_no == 5)
++		return fixup_pvar(param);
+ 	LM_ERR("Too many parameters %d\n", param_no);
+ 	return E_CFG;
+ }
+@@ -2618,6 +2624,43 @@ rtpproxy_offer4_f(struct sip_msg *msg, char *param1, char *param2, char *param3,
+ 	return force_rtp_proxy(msg, param1, param2, param3, param4, 1);
+ }
+ 
++
++static int
++rtpproxy_offer5_f(struct sip_msg *msg, char *param1, char *param2, char *param3, char *param4, char *param5)
++{
++	str aux_str;
++
++	if(rtpp_notify_socket.s)
++	{
++		if ( (!msg->to && parse_headers(msg, HDR_TO_F,0)<0) || !msg->to ) {
++			LM_ERR("bad request or missing TO hdr\n");
++			return -1;
++		}
++
++		/* if an initial request - create a new dialog */
++		if(get_to(msg)->tag_value.s == NULL)
++			dlg_api.create_dlg(msg,0);
++	}
++
++	if (param1) {
++		if (rtpp_get_var_svalue(msg, (gparam_p)param1, &aux_str, 0)<0) {
++			LM_ERR("bogus flags parameter\n");
++			return -1;
++		}
++		param1 = aux_str.s;
++	}
++
++	if (param2) {
++		if (rtpp_get_var_svalue(msg, (gparam_p)param2, &aux_str, 1)<0) {
++			LM_ERR("bogus IP addr parameter\n");
++			return -1;
++		}
++		param2 = aux_str.s;
++	}
++
++	return force_rtp_proxy2(msg, param1, param2, param3, param4, param5, 1);
++}
++
+ static int
+ rtpproxy_answer4_f(struct sip_msg *msg, char *param1, char *param2, char *param3, char *param4)
+ {
+@@ -3365,6 +3408,148 @@ error_with_lock:
+ 	return -1;
+ }
+ 
++static int
++force_rtp_proxy2(struct sip_msg* msg, char* str1, char* str2, char *setid, char *var, char *var2, int offer)
++{
++	struct multi_body *m;
++	struct part * p;
++	struct force_rtpp_args args;
++	struct force_rtpp_args *ap;
++	union sockaddr_union to;
++	struct ip_addr ip;
++	struct cell *trans;
++
++	memset(&args, '\0', sizeof(args));
++	m = get_all_bodies(msg);
++
++	if (m == NULL)
++	{
++		LM_ERR("Unable to parse body\n");
++		return -1;
++	}
++
++	LM_DBG("force rtp proxy with param1 <%s> and param2 <%s>\n",
++			str1 ? str1 : "none", str2 ? str2 : "none");
++
++	if (get_callid(msg, &args.callid) == -1 || args.callid.len == 0) {
++		LM_ERR("can't get Call-Id field\n");
++		return (-1);
++	}
++
++
++	args.arg1 = str1;
++	args.arg2 = str2;
++	args.offer = offer;
++
++	for (p = m->first; p != NULL; p = p->next)
++	{
++		int ret = 0;
++		if (p->content_type != ((TYPE_APPLICATION << 16) + SUBTYPE_SDP))
++			continue;
++		if (p->body.len == 0) {
++			LM_WARN("empty body\n");
++			continue;
++		}
++		args.body = p->body;
++
++		/* there is not a problem if the set is not got under lock, since
++		 * after we have it, we will never delete/change it */
++		args.set = get_rtpp_set(msg, (nh_set_param_t *)setid);
++		if (!args.set) {
++			LM_ERR("cannot find RTPProxy set\n");
++			return -1;
++		}
++
++		if (rtpproxy_autobridge) {
++
++			if (nh_lock)
++				lock_start_read(nh_lock);
++
++			args.node = select_rtpp_node(msg, args.callid, args.set, (pv_spec_p)var, 1);
++			if (args.node == NULL) {
++				LM_ERR("no available proxies\n");
++				goto error_with_lock;
++			}
++
++			/* XXX: here we assume that all nodes in a set should be similar */
++			if (args.node->abr_supported) {
++				if (msg->first_line.type == SIP_REQUEST) {
++					ap = pkg_malloc(sizeof(*ap));
++					if (ap == NULL) {
++						LM_ERR("can't allocate memory\n");
++						return (-1);
++					}
++					memcpy(ap, &args, sizeof(*ap));
++					if (str1 != NULL) {
++						ap->arg1 = pkg_strdup(str1);
++						if (ap->arg1 == NULL) {
++							pkg_free(ap);
++							LM_ERR("can't allocate memory\n");
++							return (-1);
++						}
++					}
++					if (str2 != NULL) {
++						ap->arg2 = pkg_strdup(str2);
++						if (ap->arg2  == NULL) {
++							if (ap->arg1 != NULL)
++								pkg_free(ap->arg1);
++							pkg_free(ap);
++							LM_ERR("can't allocate memory\n");
++							return (-1);
++						}
++					}
++					/* we don't remember the node, since it might not be
++					 * available later when we execute the callback */
++					ap->node = NULL;
++					msg_callback_add(msg, REQ_PRE_FORWARD, rtpproxy_pre_fwd, ap);
++					msg_callback_add(msg, MSG_DESTROY, rtpproxy_pre_fwd_free, ap);
++					if (nh_lock)
++						lock_stop_read(nh_lock);
++					continue;
++				} else {
++					/* first try to get the destination of this reply from the
++					 * transaction (as the source of the request) */
++					if (tm_api.t_gett && (trans=tm_api.t_gett())!=0 &&
++					trans!=T_UNDEFINED && trans->uas.request ) {
++						/* we have the request from the transaction this
++						 * reply belongs to */
++						args.raddr.s = ip_addr2a(&trans->uas.request->rcv.src_ip);
++						args.raddr.len = strlen(args.raddr.s);
++					} else if (parse_headers(msg, HDR_VIA2_F, 0) != -1 &&
++					(msg->via2 != NULL) && (msg->via2->error == PARSE_OK) &&
++					update_sock_struct_from_via(&to, msg, msg->via2)!=-1) {
++						su2ip_addr(&ip, &to);
++						args.raddr.s = ip_addr2a(&ip);
++						args.raddr.len = strlen(args.raddr.s);
++					} else {
++						LM_ERR("can't extract reply destination from "
++							"transaction/reply_via2\n");
++					}
++				}
++			}
++		}
++
++		LM_DBG("Forcing body:\n[%.*s]\n", args.body.len, args.body.s);
++		ret = force_rtp_proxy_body2(msg, &args, (pv_spec_p)var, (pv_spec_p)var2);
++
++		if (rtpproxy_autobridge) {
++			if (nh_lock)
++				lock_stop_read(nh_lock);
++			args.node = NULL;
++		}
++
++		if (ret < 0)
++			return ret;
++	}
++
++	return 1;
++
++error_with_lock:
++	if (nh_lock)
++		lock_stop_read(nh_lock);
++	return -1;
++}
++
+ static inline int rtpp_get_error(char *command)
+ {
+ 	int ret;
+@@ -3991,6 +4176,630 @@ error:
+ 	FORCE_RTP_PROXY_RET (-1);
+ }
+ 
++int
++force_rtp_proxy_body2(struct sip_msg* msg, struct force_rtpp_args *args, pv_spec_p var, pv_spec_p var2)
++{
++	str body1, oldport, oldip, newport, newip ,nextport;
++	str from_tag, to_tag, tmp, payload_types;
++	int create, port, len, asymmetric, flookup, argc, proxied, real;
++	int orgip, commip, enable_notification;
++	int pf, pf1, force, err, locked = 0;
++	struct options opts, rep_opts, pt_opts;
++	char *cp, *cp1;
++	char  *cpend, *next;
++	char **ap, *argv[10];
++	struct lump* anchor;
++	struct iovec v[] = {
++		{NULL, 0},	/* reserved (cookie) */
++		{NULL, 0},	/* command & common options */
++		{NULL, 0},	/* per-media/per-node options 1 */
++		{NULL, 0},	/* per-media/per-node options 2 */
++		{" ", 1},	/* separator */
++		{NULL, 0},	/* callid */
++		{" ", 1},	/* separator */
++		{NULL, 7},	/* newip */
++		{" ", 1},	/* separator */
++		{NULL, 1},	/* oldport */
++		{" ", 1},	/* separator */
++		{NULL, 0},	/* from_tag */
++		{";", 1},	/* separator */
++		{NULL, 0},	/* medianum */
++		{" ", 1},	/* separator */
++		{NULL, 0},	/* to_tag */
++		{";", 1},	/* separator */
++		{NULL, 0},	/* medianum */
++		{" ", 1},	/* separator */
++		{NULL, 0},	/* notify socket name */
++		{" ", 1},	/* separator */
++		{NULL, 0}	/* notify tag */
++	};
++	char *v1p, *v2p, *c1p, *c2p, *m1p, *m2p, *bodylimit, *o1p, *r2p;
++	char medianum_buf[20];
++	int medianum, media_multi;
++	str medianum_str, tmpstr1;
++	int c1p_altered;
++	int vcnt;
++
++	memset(&opts, '\0', sizeof(opts));
++	memset(&rep_opts, '\0', sizeof(rep_opts));
++	memset(&pt_opts, '\0', sizeof(pt_opts));
++	/* Leave space for U/L prefix TBD later */
++	if (append_opts(&opts, '?') == -1) {
++		LM_ERR("out of pkg memory\n");
++		FORCE_RTP_PROXY_RET (-1);
++	}
++	asymmetric = flookup = force = real = orgip = commip = enable_notification = 0;
++	for (cp = args->arg1; cp != NULL && *cp != '\0'; cp++) {
++		switch (*cp) {
++		case 'a':
++		case 'A':
++			if (append_opts(&opts, 'A') == -1) {
++				LM_ERR("out of pkg memory\n");
++				FORCE_RTP_PROXY_RET (-1);
++			}
++			asymmetric = 1;
++			real = 1;
++			break;
++
++		case 'i':
++		case 'I':
++			if (append_opts(&opts, 'I') == -1) {
++				LM_ERR("out of pkg memory\n");
++				FORCE_RTP_PROXY_RET (-1);
++			}
++			break;
++
++		case 'e':
++		case 'E':
++			if (append_opts(&opts, 'E') == -1) {
++				LM_ERR("out of pkg memory\n");
++				FORCE_RTP_PROXY_RET (-1);
++			}
++			break;
++
++		case 'l':
++		case 'L':
++			if (args->offer != 0) {
++				flookup = 1;
++			}
++			break;
++
++		case 'f':
++		case 'F':
++			force = 1;
++			break;
++
++		case 'r':
++		case 'R':
++			real = 1;
++			break;
++
++		case 'c':
++		case 'C':
++			commip = 1;
++			break;
++
++		case 'o':
++		case 'O':
++			orgip = 1;
++			break;
++
++		case 'n':
++		case 'N':
++			enable_notification = 1;
++			break;
++
++		case 'w':
++		case 'W':
++		case 's':
++		case 'S':
++			if (append_opts(&opts, 'S') == -1) {
++				LM_ERR("out of pkg memory\n");
++				FORCE_RTP_PROXY_RET (-1);
++			}
++			break;
++
++		case 'z':
++		case 'Z':
++			if (append_opts(&rep_opts, 'Z') == -1) {
++				LM_ERR("out of pkg memory\n");
++				FORCE_RTP_PROXY_RET (-1);
++			}
++			/* If there are any digits following Z copy them into the command */
++			for (; cp[1] != '\0' && isdigit(cp[1]); cp++) {
++				if (append_opts(&rep_opts, cp[1]) == -1) {
++					LM_ERR("out of pkg memory\n");
++					FORCE_RTP_PROXY_RET (-1);
++				}
++			}
++			break;
++
++		default:
++			LM_WARN("unknown option `%c'\n", *cp);
++			if (append_opts(&opts, *cp) == -1) {
++				LM_ERR("out of pkg memory\n");
++				FORCE_RTP_PROXY_RET (-1);
++			}
++		}
++	}
++
++	if (args->raddr.s != NULL) {
++		if (append_opts(&rep_opts, 'R') == -1 || \
++		    append_opts_str(&rep_opts, &args->raddr) == -1) {
++			LM_ERR("out of pkg memory\n");
++			FORCE_RTP_PROXY_RET (-1);
++		}
++	}
++
++	if (args->offer != 0) {
++		create = 1;
++	} else {
++		create = 0;
++	}
++
++	to_tag.s = 0;
++	if (get_to_tag(msg, &to_tag) == -1) {
++		LM_ERR("can't get To tag\n");
++		FORCE_RTP_PROXY_RET (-1);
++	}
++	if (get_from_tag(msg, &from_tag) == -1 || from_tag.len == 0) {
++		LM_ERR("can't get From tag\n");
++		FORCE_RTP_PROXY_RET (-1);
++	}
++	if (flookup != 0) {
++		if (to_tag.len == 0) {
++			FORCE_RTP_PROXY_RET (-1);
++		}
++		create = 0;
++		if (msg->first_line.type==SIP_REQUEST) {
++			tmp = from_tag;
++			from_tag = to_tag;
++			to_tag = tmp;
++		}
++	} else if ((msg->first_line.type==SIP_REPLY && args->offer!=0)||
++	(msg->first_line.type == SIP_REQUEST && args->offer == 0) ) {
++		if (to_tag.len == 0) {
++			FORCE_RTP_PROXY_RET (-1);
++		}
++		tmp = from_tag;
++		from_tag = to_tag;
++		to_tag = tmp;
++	}
++	proxied = 0;
++	if (nortpproxy_str.len) {
++		for ( cp=args->body.s ; (len=args->body.s+args->body.len-cp) >= nortpproxy_str.len ; ) {
++			cp1 = ser_memmem(cp, nortpproxy_str.s, len, nortpproxy_str.len);
++			if (cp1 == NULL)
++				break;
++			if (cp1[-1] == '\n' || cp1[-1] == '\r') {
++				proxied = 1;
++				break;
++			}
++			cp = cp1 + nortpproxy_str.len;
++		}
++	}
++	if (proxied != 0 && force == 0) {
++		FORCE_RTP_PROXY_RET (-1);
++	}
++	/*
++	 * Parsing of SDP body.
++	 * It can contain a few session descriptions (each starts with
++	 * v-line), and each session may contain a few media descriptions
++	 * (each starts with m-line).
++	 * We have to change ports in m-lines, and also change IP addresses in
++	 * c-lines which can be placed either in session header (fallback for
++	 * all medias) or media description.
++	 * Ports should be allocated for any media. IPs all should be changed
++	 * to the same value (RTP proxy IP), so we can change all c-lines
++	 * unconditionally.
++	 */
++	bodylimit = args->body.s + args->body.len;
++	v1p = find_sdp_line(args->body.s, bodylimit, 'v');
++	if (v1p == NULL) {
++		LM_ERR("no sessions in SDP\n");
++		FORCE_RTP_PROXY_RET (-1);
++	}
++	v2p = find_next_sdp_line(v1p, bodylimit, 'v', bodylimit);
++	media_multi = (v2p != bodylimit);
++	v2p = v1p;
++	medianum = 0;
++
++	opts.s.s[0] = (create == 0) ? 'L' : 'U';
++	v[1].iov_base = opts.s.s;
++	v[1].iov_len = opts.oidx;
++	STR2IOVEC(args->callid, v[5]);
++	STR2IOVEC(from_tag, v[11]);
++	STR2IOVEC(to_tag, v[15]);
++
++	if (enable_notification &&
++			(rtpp_notify_socket.s == 0 || rtpp_notify_socket.len == 0)) {
++		LM_DBG("cannot receive timeout notifications because"
++				"rtpp_notify_socket parameter is not specified\n");
++		enable_notification = 0;
++	}
++
++	if(enable_notification && opts.s.s[0] == 'U')
++	{
++		struct dlg_cell * dlg;
++		char buf[32];
++		str notify_tag;
++
++		dlg = dlg_api.get_dlg();
++		if(dlg == NULL)
++		{
++			LM_ERR("Failed to get dialog\n");
++			goto error;
++		}
++		/* construct the notify tag from dualog ids */
++		notify_tag.len= sprintf(buf, "%d.%d", dlg->h_entry, dlg->h_id);
++		notify_tag.s = buf;
++		LM_DBG("notify_tag= %s\n", notify_tag.s);
++
++		if (strncmp(rtpp_notify_socket.s, "tcp:", 4) == 0) {
++			rtpp_notify_socket.s += 4;
++			rtpp_notify_socket.len -= 4;
++		} else if (strncmp(rtpp_notify_socket.s, "unix:", 5) == 0) {
++			rtpp_notify_socket.s += 5;
++			rtpp_notify_socket.len -= 5;
++		}
++
++		STR2IOVEC(rtpp_notify_socket, v[19]);
++		STR2IOVEC(notify_tag, v[21]);
++	}
++
++	for(;;) {
++		/* Per-session iteration. */
++		v1p = v2p;
++		if (v1p == NULL || v1p >= bodylimit)
++			break; /* No sessions left */
++		v2p = find_next_sdp_line(v1p, bodylimit, 'v', bodylimit);
++		/* v2p is text limit for session parsing. */
++		/* get session origin */
++		o1p = find_sdp_line(v1p, v2p, 'o');
++		if (o1p==0) {
++			LM_ERR("no o= in session\n");
++			goto error;
++		}
++		/* Have this session media description? */
++		m1p = find_sdp_line(o1p, v2p, 'm');
++		if (m1p == NULL) {
++			LM_ERR("no m= in session\n");
++			goto error;
++		}
++		/*
++		 * Find c1p only between session begin and first media.
++		 * c1p will give common c= for all medias.
++		 */
++		c1p = find_sdp_line(o1p, m1p, 'c');
++		c1p_altered = 0;
++		if (orgip==0)
++			o1p = 0;
++		/* Have session. Iterate media descriptions in session */
++		m2p = m1p;
++		for (;;) {
++			m1p = m2p;
++			if (m1p == NULL || m1p >= v2p)
++				break;
++			m2p = find_next_sdp_line(m1p, v2p, 'm', v2p);
++			/* c2p will point to per-media "c=" */
++			c2p = find_sdp_line(m1p, m2p, 'c');
++			/* Extract address and port */
++			r2p = find_sdp_line_complex(m1p, m2p, "a=rtcp:");
++
++			tmpstr1.s = c2p ? c2p : c1p;
++			if (tmpstr1.s == NULL) {
++				/* No "c=" */
++				LM_ERR("can't find media IP in the message\n");
++				goto error;
++			}
++			tmpstr1.len = v2p - tmpstr1.s; /* limit is session limit text */
++			if (extract_mediaip(&tmpstr1, &oldip, &pf,"c=") == -1) {
++				LM_ERR("can't extract media IP from the message\n");
++				goto error;
++			}
++			tmpstr1.s = m1p;
++			tmpstr1.len = m2p - m1p;
++			if (extract_mediainfo(&tmpstr1, &oldport, &payload_types) == -1) {
++				LM_ERR("can't extract media port from the message\n");
++				goto error;
++			}
++			++medianum;
++			if (asymmetric != 0 || real != 0) {
++				newip = oldip;
++			} else {
++				newip.s = ip_addr2a(&msg->rcv.src_ip);
++				newip.len = strlen(newip.s);
++			}
++			/* XXX must compare address families in all addresses */
++			if (pf == AF_INET6) {
++				if (append_opts(&opts, '6') == -1) {
++					LM_ERR("out of pkg memory\n");
++					goto error;
++				}
++			}
++			STR2IOVEC(newip, v[7]);
++			STR2IOVEC(oldport, v[9]);
++			if (1 || media_multi) /* XXX netch: can't choose now*/
++			{
++				snprintf(medianum_buf, sizeof medianum_buf, "%d", medianum);
++				medianum_str.s = medianum_buf;
++				medianum_str.len = strlen(medianum_buf);
++				STR2IOVEC(medianum_str, v[13]);
++				STR2IOVEC(medianum_str, v[17]);
++			} else {
++				v[12].iov_len = v[13].iov_len = 0;
++				v[16].iov_len = v[17].iov_len = 0;
++			}
++			if (!args->node && nh_lock) {
++				locked = 1;
++				lock_start_read(nh_lock);
++			}
++			do {
++
++				/* if not successfull choose a different rtpproxy */
++				if (!args->node) {
++					args->node = select_rtpp_node(msg, args->callid, args->set, var, 0);
++					if (!args->node) {
++						LM_ERR("no available proxies\n");
++						goto error;
++					}
++					LM_DBG("trying new rtpproxy node %s\n", args->node->rn_address);
++				}
++				/* if we don't have, we should choose a new node */
++				if (rep_opts.oidx > 0) {
++					if (args->node->rn_rep_supported == 0) {
++						LM_WARN("re-packetization is requested but is not "
++						    "supported by the selected RTP proxy node\n");
++						v[2].iov_len = 0;
++					} else {
++						v[2].iov_base = rep_opts.s.s;
++						v[2].iov_len = rep_opts.oidx;
++					}
++				}
++				if (payload_types.len > 0 && args->node->rn_ptl_supported != 0) {
++					pt_opts.oidx = 0;
++					if (append_opts(&pt_opts, 'c') == -1) {
++						LM_ERR("out of pkg memory\n");
++						goto error;
++					}
++					/*
++					 * Convert space-separated payload types list into
++					 * a comma-separated list.
++					 */
++					for (cp = payload_types.s;
++					    cp < payload_types.s + payload_types.len; cp++) {
++						if (isdigit(*cp)) {
++							if (append_opts(&pt_opts, *cp) == -1) {
++								LM_ERR("out of pkg memory\n");
++								goto error;
++							}
++							continue;
++						}
++						do {
++							cp++;
++						} while (!isdigit(*cp) &&
++						    cp < payload_types.s + payload_types.len);
++						/* Check EOL */
++						if (cp >= payload_types.s + payload_types.len)
++							break;
++						if (append_opts(&pt_opts, ',') == -1) {
++							LM_ERR("out of pkg memory\n");
++							goto error;
++						}
++						cp--;
++					}
++					v[3].iov_base = pt_opts.s.s;
++					v[3].iov_len = pt_opts.oidx;
++				} else {
++					v[3].iov_len = 0;
++				}
++				if(enable_notification && opts.s.s[0] == 'U')
++					vcnt = 22;
++				else
++				{
++					vcnt = (to_tag.len > 0) ? 18 : 14;
++				}
++				cp = send_rtpp_command(args->node, v, vcnt);
++				if (!cp && !create) {
++					LM_ERR("cannot lookup a session on a different RTPProxy\n");
++					goto error;
++				}
++				if (cp && (err = rtpp_get_error(cp))) {
++					/* check internal errors */
++					if (err >= 7 && err <= 10) {
++						cp = NULL;
++						args->node->rn_disabled = 1;
++						args->node->rn_recheck_ticks = get_ticks() +
++							rtpproxy_disable_tout;
++						raise_rtpproxy_event(args->node, 0);
++					} else {
++						LM_ERR("unhandled rtpproxy error: %d\n", err);
++						goto error;
++					}
++				}
++				args->node = NULL;
++			} while (cp == NULL);
++			if (locked) {
++				locked = 0;
++				lock_stop_read(nh_lock);
++			}
++			LM_DBG("proxy reply: %s\n", cp);
++			/* Parse proxy reply to <argc,argv> */
++			argc = 0;
++			memset(argv, 0, sizeof(argv));
++			cpend=cp+strlen(cp);
++			next=eat_token_end(cp, cpend);
++			for (ap=argv; cp<cpend; cp=next+1, next=eat_token_end(cp, cpend)){
++				*next=0;
++				if (*cp != '\0') {
++					*ap=cp;
++					argc++;
++					if ((char*)++ap >= ((char*)argv+sizeof(argv)))
++						break;
++				}
++			}
++			if (argc < 1) {
++				LM_ERR("no reply from rtp proxy\n");
++				goto error;
++			}
++			port = atoi(argv[0]);
++
++			if (port <= 0 || port > 65535) {
++				if (port != 0 || flookup == 0)
++					LM_ERR("incorrect port %i in reply "
++						"from rtp proxy\n",port);
++				goto error;
++			}
++
++			pf1 = (argc >= 3 && argv[2][0] == '6') ? AF_INET6 : AF_INET;
++
++			if (isnulladdr(&oldip, pf)) {
++				if (pf1 == AF_INET6) {
++					newip.s = "::";
++					newip.len = 2;
++				} else {
++					newip.s = "0.0.0.0";
++					newip.len = 7;
++				}
++			} else {
++				/* handle all possible cases properly
++				 * 1) second argument w/ip passed to offer/answer (args->arg2)
++				 * 2) no second argument, rtpproxy response contains ip (argv[1])
++				 * 3) no ip in rtpproxy response (started using unix socket and no -l param)
++				 *    must revert to default of proxy ip
++				 */
++				newip.s = args->arg2 ? args->arg2 : argv[1] ? argv[1] : ip_addr2a(&msg->rcv.dst_ip);
++				newip.len = strlen(newip.s);
++			}
++			/* marker to double check : newport goes: str -> int -> str ?!?! */
++			newport.s = int2str(port, &newport.len); /* beware static buffer */
++
++			/* Alter port. */
++			body1.s = m1p;
++			body1.len = bodylimit - body1.s;
++			/* do not do it if old port was 0 (means media disable)
++			 * - check if actually should be better done in rtpptoxy,
++			 *   by returning also 0
++			 * - or by not sending to rtpproxy the old port if 0
++			 */
++			if(oldport.len!=1 || oldport.s[0]!='0')
++			{
++				if (alter_mediaport(msg, &body1, &oldport, &newport, 0) == -1)
++					goto error;
++			}
++
++			nextport.s = int2str(port+1, &nextport.len);
++
++			if( r2p )
++				if (alter_rtcp(msg, &body1, &newip, pf1, &nextport, r2p) < 0 )
++					goto error;
++
++			/*
++			 * Alter IP. Don't alter IP common for the session
++			 * more than once.
++			 */
++			if (c2p != NULL || !c1p_altered) {
++				body1.s = c2p ? c2p : c1p;
++				body1.len = bodylimit - body1.s;
++				if (alter_mediaip(msg, &body1, &oldip, pf, &newip, pf1, 0)==-1)
++					goto error;
++				if (!c2p)
++					c1p_altered = 1;
++			}
++			/*
++			 * Alter common IP if required, but don't do it more than once.
++			 */
++			if (commip && c1p && !c1p_altered) {
++				tmpstr1.s = c1p;
++				tmpstr1.len = v2p - tmpstr1.s;
++				if (extract_mediaip(&tmpstr1, &oldip, &pf,"c=") == -1) {
++					LM_ERR("can't extract media IP from the message\n");
++					goto error;
++				}
++				body1.s = c1p;
++				body1.len = bodylimit - body1.s;
++				if (alter_mediaip(msg, &body1, &oldip, pf, &newip, pf1, 0)==-1)
++					goto error;
++				c1p_altered = 1;
++			}
++			/*
++			 * Alter the IP in "o=", but only once per session
++			 */
++			if (o1p) {
++				tmpstr1.s = o1p;
++				tmpstr1.len = v2p - tmpstr1.s;
++				if (extract_mediaip(&tmpstr1, &oldip, &pf,"o=") == -1) {
++					LM_ERR("can't extract media IP from the message\n");
++					goto error;
++				}
++				body1.s = o1p;
++				body1.len = bodylimit - body1.s;
++				if (alter_mediaip(msg, &body1, &oldip, pf, &newip, pf1, 0)==-1)
++					goto error;
++				o1p = 0;
++			}
++
++			/*
++			 * Set ip and port in var to return to the script
++			 */
++			if (var2 && (newport.len > 0) && (newip.len > 0)) {
++				pv_value_t val;
++				int newaddrlen = (newip.len + newport.len + 2) ; /* Add ':' = 1 and null*/
++				char *newaddr = (char*)pkg_malloc(newaddrlen * sizeof(char*));
++				if(newaddr == NULL) {
++					LM_ERR("out of pkg memory\n");
++					goto error ;
++				}
++				memset(&val, 0, sizeof(pv_value_t));
++				snprintf(newaddr,newaddrlen,"%.*s:%.*s",newip.len,newip.s,newport.len,newport.s);
++				val.flags = PV_VAL_STR;
++				val.rs.s = newaddr ;
++				val.rs.len = newaddrlen - 1; /* ignore the null used by snprintf */
++				if(pv_set_value(msg, var2, (int)EQ_T, &val)<0)
++					LM_ERR("setting PV failed\n");
++			}
++
++		} /* Iterate medias in session */
++	} /* Iterate sessions */
++	free_opts(&opts, &rep_opts, &pt_opts);
++
++	if (proxied == 0 && nortpproxy_str.len) {
++		cp = pkg_malloc((nortpproxy_str.len + CRLF_LEN) * sizeof(char));
++		if (cp == NULL) {
++			LM_ERR("out of pkg memory\n");
++			return -1;
++		}
++		/* find last CRLF and add after it */
++		cp1 = args->body.s + args->body.len;
++		while( cp1>args->body.s && !(*(cp1-1)=='\n' && *(cp1-2)=='\r') ) cp1--;
++		if (cp1==args->body.s) cp1=args->body.s + args->body.len;
++
++		anchor = anchor_lump(msg, cp1 - msg->buf, 0, 0);
++		if (anchor == NULL) {
++			LM_ERR("anchor_lump failed\n");
++			pkg_free(cp);
++			return -1;
++		}
++		memcpy(cp, nortpproxy_str.s, nortpproxy_str.len);
++		memcpy(cp+nortpproxy_str.len , CRLF, CRLF_LEN);
++		if (insert_new_lump_before(anchor, cp, nortpproxy_str.len + CRLF_LEN, 0) == NULL) {
++			LM_ERR("insert_new_lump_after failed\n");
++			pkg_free(cp);
++			return -1;
++		}
++	}
++
++	return 1;
++
++error:
++	if(!locked)
++		FORCE_RTP_PROXY_RET (-1);
++
++	/* we are done reading -> unref the data */
++	lock_stop_read( nh_lock );
++
++	FORCE_RTP_PROXY_RET (-1);
++}
+ 
+ 
+ static int start_recording_f(struct sip_msg* msg, char *setid, char *var)
+diff --git a/modules/rtpproxy/rtpproxy.h b/modules/rtpproxy/rtpproxy.h
+index db86290..29509a1 100644
+--- a/modules/rtpproxy/rtpproxy.h
++++ b/modules/rtpproxy/rtpproxy.h
+@@ -125,5 +125,6 @@ struct rtpp_set *get_rtpp_set(struct sip_msg *, nh_set_param_t *);
+ struct rtpp_node *select_rtpp_node(struct sip_msg *, str, struct rtpp_set *, pv_spec_p, int);
+ char *send_rtpp_command(struct rtpp_node *, struct iovec *, int);
+ int force_rtp_proxy_body(struct sip_msg *, struct force_rtpp_args *, pv_spec_p);
++int force_rtp_proxy_body2(struct sip_msg* msg, struct force_rtpp_args *args, pv_spec_p var, pv_spec_p var2);
+ 
+ #endif
+diff --git a/modules/seas/seas_action.c b/modules/seas/seas_action.c
+index 8691588..3a8badf 100644
+--- a/modules/seas/seas_action.c
++++ b/modules/seas/seas_action.c
+@@ -903,7 +903,7 @@ int forward_sl_request(struct sip_msg *msg,struct proxy_l *proxy,int proto)
+ 			continue;
+ 		}
+ 		LM_DBG("Sending:\n%.*s.\n", (int)msg->len,msg->buf);
+-		if (msg_send(send_sock, proto, to, 0, msg->buf,msg->len)<0){
++		if (msg_send(send_sock, proto, to, 0, msg->buf,msg->len,NULL)<0){
+ 			LM_ERR("ERROR:seas:forward_msg: Error sending message !!\n");
+ 			continue;
+ 		}
+diff --git a/modules/siptrace/siptrace.c b/modules/siptrace/siptrace.c
+index 0bdfc09..48800af 100644
+--- a/modules/siptrace/siptrace.c
++++ b/modules/siptrace/siptrace.c
+@@ -1632,7 +1632,7 @@ static int trace_send_duplicate(char *buf, int len)
+ 			continue;
+ 		}
+ 
+-		if (msg_send(send_sock, proto, to, 0, buf, len)<0){
++		if (msg_send(send_sock, proto, to, 0, buf, len,NULL)<0){
+ 			LM_ERR("cannot send duplicate message\n");
+ 			continue;
+ 		}
+@@ -1806,7 +1806,7 @@ static int trace_send_hep_duplicate(str *body, str *fromip, str *toip)
+ 			continue;
+ 		}
+ 
+-		if (msg_send(send_sock, proto, to, 0, buffer, buflen)<0){
++		if (msg_send(send_sock, proto, to, 0, buffer, buflen,NULL)<0){
+ 			LM_ERR("cannot send duplicate message\n");
+ 			continue;
+ 		}
+diff --git a/modules/sl/sl_funcs.c b/modules/sl/sl_funcs.c
+index 53147db..ba87435 100644
+--- a/modules/sl/sl_funcs.c
++++ b/modules/sl/sl_funcs.c
+@@ -191,7 +191,7 @@ int sl_send_reply_helper(struct sip_msg *msg ,int code, str *text)
+ 	mhomed=0;
+ 	/* use for sending the received interface -bogdan*/
+ 	ret = msg_send( msg->rcv.bind_address, msg->rcv.proto, &to,
+-			msg->rcv.proto_reserved1, buf.s, buf.len);
++			msg->rcv.proto_reserved1, buf.s, buf.len,NULL);
+ 	mhomed=backup_mhomed;
+ 	pkg_free(buf.s);
+ 
+diff --git a/modules/tm/t_funcs.c b/modules/tm/t_funcs.c
+index c947d5f..01d0047 100644
+--- a/modules/tm/t_funcs.c
++++ b/modules/tm/t_funcs.c
+@@ -59,15 +59,15 @@ static str relay_reason_100 = str_init("Giving a try");
+ 
+ 
+ /* ----------------------------------------------------- */
+-int send_pr_buffer( struct retr_buf *rb, void *buf, int len
++int send_pr_buffer( struct retr_buf *rb, void *buf, int len,
+ #ifdef EXTRA_DEBUG
+-						, char* file, const char *function, int line
++						, char* file, const char *function, int line,
+ #endif
+-					)
++					void *ctx)
+ {
+ 	if (buf && len && rb )
+ 		return msg_send( rb->dst.send_sock, rb->dst.proto, &rb->dst.to,
+-				         rb->dst.proto_reserved1, buf, len);
++				         rb->dst.proto_reserved1, buf, len, ctx);
+ 	else {
+ #ifdef EXTRA_DEBUG
+ 		LM_CRIT("sending an empty buffer from %s: %s (%d)\n",file,
+diff --git a/modules/tm/t_funcs.h b/modules/tm/t_funcs.h
+index 78c902f..28087aa 100644
+--- a/modules/tm/t_funcs.h
++++ b/modules/tm/t_funcs.h
+@@ -87,18 +87,26 @@ extern int noisy_ctimer;
+ */
+ #ifdef EXTRA_DEBUG
+ int send_pr_buffer( struct retr_buf *rb,
+-	void *buf, int len, char* file, const char *function, int line );
++	void *buf, int len, char* file, const char *function, int line, void *ctx);
+ #define SEND_PR_BUFFER(_rb,_bf,_le ) \
+ 	send_pr_buffer( (_rb), (_bf), (_le), __FILE__,  __FUNCTION__, __LINE__ )
++#define SEND_PR_CONTEXTS_BUFFER(_rb,_bf,_le, _ctx ) \
++        send_pr_buffer( (_rb), (_bf), (_le), __FILE__, __FUNCTION, __LINE__ ,_ctx)
+ #else
+-int send_pr_buffer( struct retr_buf *rb, void *buf, int len);
++int send_pr_buffer( struct retr_buf *rb, void *buf, int len, void *ctx);
+ #define SEND_PR_BUFFER(_rb,_bf,_le ) \
+-	send_pr_buffer( (_rb), (_bf), (_le))
++	send_pr_buffer( (_rb), (_bf), (_le), NULL)
++#define SEND_PR_CONTEXTS_BUFFER(_rb,_bf,_le, _ctx ) \
++        send_pr_buffer( (_rb), (_bf), (_le), _ctx)
+ #endif
+ 
+ #define SEND_BUFFER( _rb ) \
+ 	SEND_PR_BUFFER( (_rb) , (_rb)->buffer.s , (_rb)->buffer.len )
+ 
++#define SEND_CONTEXTS_BUFFER( _rb, ctx) \
++        SEND_PR_CONTEXTS_BUFFER( (_rb) , (_rb)->buffer.s, (_rb)->buffer.len, ctx)
++
++
+ 
+ #define UNREF_UNSAFE(_T_cell) do { \
+ 	((_T_cell)->ref_count--);\
+diff --git a/modules/tm/t_reply.c b/modules/tm/t_reply.c
+index 8eb58f3..3904d6b 100644
+--- a/modules/tm/t_reply.c
++++ b/modules/tm/t_reply.c
+@@ -1293,7 +1293,7 @@ enum rps relay_reply( struct cell *t, struct sip_msg *p_msg, int branch,
+ 			}
+ 			relayed_code=relayed_msg->REPLY_STATUS;
+ 			buf = build_res_buf_from_sip_res( relayed_msg, &res_len,
+-							uas_rb->dst.send_sock);
++							uas_rb->dst.send_sock,0);
+ 			/* remove all lumps which are not in shm
+ 			 * added either by build_res_buf_from_sip_res, or by
+ 			 * the callbacks that have been called with shmem-ed messages - vlad */
+diff --git a/msg_translator.c b/msg_translator.c
+index 6fd70d6..45fcecb 100644
+--- a/msg_translator.c
++++ b/msg_translator.c
+@@ -1580,25 +1580,16 @@ error:
+ }
+ 
+ 
+-
+ char * build_res_buf_from_sip_res( struct sip_msg* msg,
+-				unsigned int *returned_len, struct socket_info *sock)
++	unsigned int *returned_len, struct socket_info *sock,int flags)
+ {
+-	unsigned int new_len, via_len, body_delta, len;
++	unsigned int new_len, body_delta, len;
+ 	char *new_buf, *buf;
+-	unsigned offset, s_offset, via_offset;
++	unsigned int offset, s_offset;
+ 
+ 	buf=msg->buf;
+ 	len=msg->len;
+ 	new_buf=0;
+-	/* we must remove the first via */
+-	if (msg->via1->next) {
+-		via_len=msg->via1->bsize;
+-		via_offset=msg->h_via1->body.s-buf;
+-	} else {
+-		via_len=msg->h_via1->len;
+-		via_offset=msg->h_via1->name.s-buf;
+-	}
+ 
+ 	/* Calculate message body difference and adjust
+ 	 * Content-Length
+@@ -1610,10 +1601,22 @@ char * build_res_buf_from_sip_res( struct sip_msg* msg,
+ 		goto error;
+ 	}
+ 
+-	/* remove the first via*/
+-	if (del_lump( msg, via_offset, via_len, HDR_VIA_T)==0){
+-		LM_ERR("failed to remove first via\n");
+-		goto error;
++	/* remove the first via */
++	if (!(flags & MSG_TRANS_NOVIA_FLAG)) {
++		unsigned int via_len, via_offset;
++
++		if (msg->via1->next) {
++			via_len = msg->via1->bsize;
++			via_offset = msg->h_via1->body.s-buf;
++		} else {
++			via_len = msg->h_via1->len;
++			via_offset = msg->h_via1->name.s-buf;
++		}
++
++		if (del_lump(msg, via_offset, via_len, HDR_VIA_T) == 0) {
++			LM_ERR("failed to remove first via\n");
++			goto error;
++		}
+ 	}
+ 
+ 	new_len=len+body_delta+lumps_len(msg, msg->add_rm, sock);
+@@ -1648,7 +1651,6 @@ error:
+ 	return 0;
+ }
+ 
+-
+ char * build_res_buf_from_sip_req( unsigned int code, str *text ,str *new_tag,
+ 		struct sip_msg* msg, unsigned int *returned_len, struct bookmark *bmark)
+ {
+diff --git a/msg_translator.h b/msg_translator.h
+index 757e055..0856965 100644
+--- a/msg_translator.h
++++ b/msg_translator.h
+@@ -91,7 +91,7 @@ char * build_req_buf_from_sip_req (	struct sip_msg* msg,
+ 				int proto, unsigned int flags);
+ 
+ char * build_res_buf_from_sip_res(	struct sip_msg* msg,
+-				unsigned int *returned_len, struct socket_info *sock);
++				unsigned int *returned_len, struct socket_info *sock, int flags);
+ 
+ 
+ char * build_res_buf_from_sip_req( unsigned int code,
+diff --git a/parser/parse_to.c b/parser/parse_to.c
+index e0178b0..a02e494 100644
+--- a/parser/parse_to.c
++++ b/parser/parse_to.c
+@@ -773,3 +773,43 @@ struct sip_uri *parse_to_uri(struct sip_msg *msg)
+ 
+ 	return &tb->parsed_uri;
+ }
++
++int parse_to_header( struct sip_msg *msg)
++{
++	struct to_body* to_b;
++
++	if ( !msg->to && ( parse_headers(msg,HDR_TO_F,0)==-1 || !msg->to)) {
++		LM_ERR("bad msg or missing To header\n");
++		goto error;
++	}
++
++	/* maybe the header is already parsed! */
++	if (msg->to->parsed)
++		return 0;
++
++	/* bad luck! :-( - we have to parse it */
++	/* first, get some memory */
++	to_b = pkg_malloc(sizeof(struct to_body));
++	if (to_b == 0) {
++		LM_ERR("out of pkg_memory\n");
++		goto error;
++	}
++
++	/* now parse it!! */
++	memset(to_b, 0, sizeof(struct to_body));
++	parse_to(msg->to->body.s,msg->to->body.s+msg->to->body.len+1,to_b);
++	if (to_b->error == PARSE_ERROR) {
++		LM_ERR("bad to header\n");
++		pkg_free(to_b);
++		set_err_info(OSER_EC_PARSER, OSER_EL_MEDIUM,
++			"error parsing too header");
++		set_err_reply(400, "bad header");
++		goto error;
++	}
++
++	msg->to->parsed = to_b;
++
++	return 0;
++error:
++	return -1;
++}
+diff --git a/parser/parse_to.h b/parser/parse_to.h
+index 59063ee..6674c02 100644
+--- a/parser/parse_to.h
++++ b/parser/parse_to.h
+@@ -64,6 +64,9 @@ struct sip_uri *parse_to_uri(struct sip_msg *msg);
+ 
+ void free_to(struct to_body* tb);
+ 
++int parse_to_header( struct sip_msg *msg) ;
++
+ inline void free_to_params(struct to_body *tb);
+ 
++
+ #endif
+diff --git a/receive.c b/receive.c
+index 8c249f9..2f8cce7 100644
+--- a/receive.c
++++ b/receive.c
+@@ -90,6 +90,18 @@ int receive_msg(char* buf, unsigned int len, struct receive_info* rcv_info)
+ 	struct timeval start;
+ 	int rc;
+ 	char *tmp;
++        str in_buff;
++
++        in_buff.len = len;
++        in_buff.s = buf;
++
++        /* the raw processing callbacks can change the buffer,
++           further use in_buff.s and at the end try to free in_buff.s
++           if changed by callbacks */
++        run_pre_raw_processing_cb(PRE_RAW_PROCESSING,&in_buff,NULL);
++        /* update the length for further processing */
++        len = in_buff.len;
++
+ 
+ 	msg=pkg_malloc(sizeof(struct sip_msg));
+ 	if (msg==0) {
+@@ -102,12 +114,12 @@ int receive_msg(char* buf, unsigned int len, struct receive_info* rcv_info)
+ 
+ 	memset(msg,0, sizeof(struct sip_msg)); /* init everything to 0 */
+ 	/* fill in msg */
+-	msg->buf=buf;
++	msg->buf=in_buff.s;
+ 	msg->len=len;
+ 	msg->rcv=*rcv_info;
+ 	msg->id=msg_no;
+ 
+-	if (parse_msg(buf,len, msg)!=0){
++	if (parse_msg(in_buff.s,len, msg)!=0){
+ 		tmp=ip_addr2a(&(rcv_info->src_ip));
+ 		LM_ERR("Unable to parse msg received from [%s:%d]\n", tmp, rcv_info->src_port);
+ 		/* if a REQUEST msg was detected (first line was succesfully parsed) we
+@@ -230,12 +242,16 @@ end:
+ 	LM_DBG("cleaning up\n");
+ 	free_sip_msg(msg);
+ 	pkg_free(msg);
++        if (in_buff.s != buf)
++                pkg_free(in_buff.s);
+ 	return 0;
+ parse_error:
+ 	exec_parse_err_cb(msg);
+ 	free_sip_msg(msg);
+ 	pkg_free(msg);
+ error:
++        if (in_buff.s != buf)
++                pkg_free(in_buff.s);
+ 	return -1;
+ }
+ 
+diff --git a/script_cb.c b/script_cb.c
+index 8aabd69..359318a 100644
+--- a/script_cb.c
++++ b/script_cb.c
+@@ -50,6 +50,8 @@ static struct script_cb *parse_err_cb=0;
+ 
+ static unsigned int cb_id=0;
+ 
++struct raw_processing_cb_list* pre_processing_cb_list = NULL;
++struct raw_processing_cb_list* post_processing_cb_list = NULL;
+ 
+ static inline int add_callback( struct script_cb **list,
+ 	cb_function f, void *param, int prio)
+@@ -208,4 +210,107 @@ int exec_parse_err_cb( struct sip_msg *msg)
+ 	return exec_post_cb( msg, parse_err_cb);
+ }
+ 
++static inline int insert_raw_processing_cb(raw_processing_func f, int type, struct raw_processing_cb_list* list, char freeable)
++{
++	struct raw_processing_cb_list *elem;
++
++	if (f == NULL) {
++		LM_ERR("null callback\n");
++		return -1;
++	}
++
++	elem = pkg_malloc(sizeof(struct raw_processing_cb_list));
++	if (elem == NULL) {
++		LM_ERR("no more pkg mem\n");
++		return -1;
++	}
++
++	elem->f = f;
++	elem->freeable = freeable;
++	elem->next = NULL;
++
++	if (list == NULL) {
++		list = elem;
++		return !(type==PRE_RAW_PROCESSING ? (pre_processing_cb_list=list)
++										  : (post_processing_cb_list=list));
++	} else {
++		while (list->next != NULL)
++			list = list->next;
++		list->next=elem;
++	}
++
++	return 0;
++
++}
++
++int register_pre_raw_processing_cb(raw_processing_func f, int type, char freeable)
++{
++	return  insert_raw_processing_cb(f, type, pre_processing_cb_list, freeable);
++}
++
++int register_post_raw_processing_cb(raw_processing_func f, int type, char freeable)
++{
++	return  insert_raw_processing_cb(f, type, post_processing_cb_list, freeable);
++}
++
++
++
++
++
++int run_pre_raw_processing_cb(int type, str* data, struct sip_msg* msg)
++{
++	return run_raw_processing_cb(type, data, msg, pre_processing_cb_list);
++}
++
++int run_post_raw_processing_cb(int type, str* data, struct sip_msg* msg)
++{
++	return run_raw_processing_cb(type, data, msg, post_processing_cb_list);
++}
++
++int run_raw_processing_cb(int type, str *data, struct sip_msg* msg, struct raw_processing_cb_list* list)
++{
++
++	struct raw_processing_cb_list *foo=NULL, *last_good=NULL, *head=NULL;
++	char *initial_data = data->s, *input_data;
++	int rc;
++
++	if (list == NULL)
++		return 0;
++
++	while (list) {
++		input_data = data->s;
++		/* a return code bigger than 0 means you want to keep the callback */
++		if ((rc = list->f(data, msg)) < 0) {
++			LM_ERR("failed to run callback\n");
++			return -1;
++		}
++
++		if (input_data != initial_data && input_data != data->s)
++			pkg_free(input_data);
++
++		foo = list;
++		list = list->next;
++
++		if (foo != NULL) {
++			if (foo->freeable && rc == 0) {
++				/* foo will be gone so link the last good element
++				 * to the next one */
++				if (last_good)
++					last_good->next=list;
++
++				pkg_free(foo);
++			} else {
++				/* keep the first element not to be freed */
++				if (head == NULL)
++					head = foo;
++				/* and keep track of the last viable element to link with the
++				 * next viable element */
++				last_good = foo;
++			}
++		}
++	}
++
++	return !(type==PRE_RAW_PROCESSING?(pre_processing_cb_list=head)
++										:(post_processing_cb_list=head));
++}
+ 
+diff --git a/script_cb.h b/script_cb.h
+index 5e5e254..0bdb050 100644
+--- a/script_cb.h
++++ b/script_cb.h
+@@ -55,6 +55,20 @@ typedef int (cb_function)( struct sip_msg *msg, void *param );
+ #define RPL_TYPE_CB      (1<<3)
+ #define PARSE_ERR_CB     (1<<4)
+ 
++/* helper is any type of data that can be used in further processing */
++typedef int (*raw_processing_func)(str *data, struct sip_msg* msg);
++#define PRE_RAW_PROCESSING  (1<<0)
++#define POST_RAW_PROCESSING (1<<1)
++
++struct raw_processing_cb_list {
++	raw_processing_func f;
++	struct raw_processing_cb_list* next;
++	char freeable; /* set this parameter if you want to register your
++						callback per message( registration at every message)
++						else put it 0, register callback only once and callback
++						will be called for every message that reaches msg_send
++						*/
++};
+ 
+ struct script_cb {
+ 	cb_function *cbf;
+@@ -79,5 +93,13 @@ int exec_post_rpl_cb( struct sip_msg *msg);
+ 
+ int exec_parse_err_cb( struct sip_msg *msg);
+ 
++int register_pre_raw_processing_cb(raw_processing_func f, int type, char freeable);
++int register_post_raw_processing_cb(raw_processing_func f, int type, char freeable);
++
++int run_pre_raw_processing_cb(int type, str* data, struct sip_msg* msg);
++int run_post_raw_processing_cb(int type, str* data, struct sip_msg* msg);
++
++int run_raw_processing_cb(int type,str *data, struct sip_msg* msg, struct raw_processing_cb_list* list);
++
+ #endif
+ 
+diff --git a/scripts/opensipsctl b/scripts/opensipsctl
+index 076ea21..9792e47 100755
+--- a/scripts/opensipsctl
++++ b/scripts/opensipsctl
+@@ -62,7 +62,10 @@ fi
+ if [ -z $MYLIBDIR ] ; then
+ 	MYLIBDIR="/usr/local/lib/opensips/opensipsctl"
+ 	if [ ! -d $MYLIBDIR ]; then
+-		MYLIBDIR=$MYDIR
++		MYLIBDIR="/usr/local/lib64/opensips/opensipsctl"
++		if [ ! -d $MYLIBDIR ]; then
++			MYLIBDIR=$MYDIR
++		fi
+ 	fi
+ fi
+ 
+@@ -2528,7 +2531,7 @@ tls_ca() {
+ 
+ 		mecho "Creating CA self-signed certificate"
+ 		( cd $CA_PATH; openssl req -config $CA_BASE/$CA_CONF -x509 -newkey \
+-			rsa:2048 -days 365 -out ./cacert.pem -outform PEM )
++			rsa:$CABIT -out ./cacert.pem -outform PEM -passin env:CAPASS -passout env:CAPASS)
+ 		if [ $? -ne 0 ] ; then
+ 			merr "Failed to create self-signed certificate"
+ 			exit 1
+@@ -2595,7 +2598,7 @@ tls_ca() {
+ 
+ 		mecho "Creating user certificate request"
+ 		openssl req  -config $USER_CFG -out $USER_DIR/$USER-cert_req.pem \
+-			-keyout $USER_DIR/$USER-privkey.pem -new -nodes
++			-keyout $USER_DIR/$USER-privkey.pem -new -nodes -passin env:CAPASS -passout env:CAPASS
+ 		if [ $? -ne 0 ] ; then
+ 			merr "Failed to generate certificate request"
+ 			exit 1
+@@ -2603,7 +2606,7 @@ tls_ca() {
+ 
+ 		mecho "Signing certificate request"
+ 		( cd $CA_BASE ; openssl ca -config $REQ_CFG -in \
+-			$USER_DIR/$USER-cert_req.pem -out $USER_DIR/$USER-cert.pem )
++			$USER_DIR/$USER-cert_req.pem -out $USER_DIR/$USER-cert.pem -passin env:CAPASS)
+ 		if [ $? -ne 0 ] ; then
+ 			merr "Failed to generate certificate request"
+ 			exit 1
+diff --git a/transformations.c b/transformations.c
+index 0718ad8..e7f6380 100644
+--- a/transformations.c
++++ b/transformations.c
+@@ -185,6 +185,33 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
+ 			val->rs.s = _tr_buffer;
+ 			val->rs.len = i;
+ 			break;
++		case TR_S_ENCODEBASE64:
++			if(!(val->flags&PV_VAL_STR))
++				val->rs.s = int2str(val->ri, &val->rs.len);
++			if(val->rs.len>TR_BUFFER_SIZE/2-1)
++				return -1;
++			base64encode((unsigned char*)_tr_buffer,(unsigned char*)val->rs.s,val->rs.len) ;
++			{
++			int outlen = calc_base64_encode_len(val->rs.len);
++			memset(val, 0, sizeof(pv_value_t));
++			val->flags = PV_VAL_STR;
++			val->rs.s = _tr_buffer;
++			val->rs.len =  outlen ;
++			}
++			break;
++		case TR_S_DECODEBASE64:
++			if(!(val->flags&PV_VAL_STR))
++				val->rs.s = int2str(val->ri, &val->rs.len);
++			if(val->rs.len>TR_BUFFER_SIZE/2-1)
++				return -1;
++			{
++			int outlen = base64decode((unsigned char*)_tr_buffer,(unsigned char*)val->rs.s,val->rs.len) ;
++			memset(val, 0, sizeof(pv_value_t));
++			val->flags = PV_VAL_STR;
++			val->rs.s = _tr_buffer;
++			val->rs.len = outlen ;
++			}
++			break;
+ 		case TR_S_HEX2DEC:
+ 			if(val->flags&PV_VAL_INT)
+ 				break; /* already converted */
+@@ -2187,6 +2214,12 @@ char* tr_parse_string(str* in, trans_t *t)
+ 	} else if(name.len==11 && strncasecmp(name.s, "decode.hexa", 11)==0) {
+ 		t->subtype = TR_S_DECODEHEXA;
+ 		return p;
++	} else if(name.len==13 && strncasecmp(name.s, "encode.base64", 13)==0) {
++		t->subtype = TR_S_ENCODEBASE64;
++		return p;
++	} else if(name.len==13 && strncasecmp(name.s, "decode.base64", 13)==0) {
++		t->subtype = TR_S_DECODEBASE64;
++		return p;
+ 	} else if(name.len==7 && strncasecmp(name.s, "hex2dec", 7)==0) {
+ 		t->subtype = TR_S_HEX2DEC;
+ 		return p;
+diff --git a/transformations.h b/transformations.h
+index 67767f0..253c4ac 100644
+--- a/transformations.h
++++ b/transformations.h
+@@ -46,7 +46,7 @@ enum _tr_s_subtype {
+ 	TR_S_SELECT, TR_S_ENCODEHEXA, TR_S_DECODEHEXA, TR_S_HEX2DEC, TR_S_DEC2HEX,
+ 	TR_S_ESCAPECOMMON, TR_S_UNESCAPECOMMON, TR_S_ESCAPEUSER, TR_S_UNESCAPEUSER,
+ 	TR_S_ESCAPEPARAM, TR_S_UNESCAPEPARAM, TR_S_TOLOWER, TR_S_TOUPPER, TR_S_CRC32,
+-	TR_S_INDEX, TR_S_RINDEX
++	TR_S_INDEX, TR_S_RINDEX, TR_S_ENCODEBASE64, TR_S_DECODEBASE64
+ };
+ enum _tr_uri_subtype {
+ 	TR_URI_NONE=0, TR_URI_USER, TR_URI_HOST, TR_URI_PASSWD, TR_URI_PORT,
+-- 
+1.7.1
+
