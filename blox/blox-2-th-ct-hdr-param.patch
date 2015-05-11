@@ -1,0 +1,127 @@
+From 1b1b38bbf6ee2cf623cffe86309ab2bee5ad337c Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Mon, 11 May 2015 03:06:16 -0700
+Subject: [PATCH] option to add SIP Contact header on topo hiding
+
+Signed-off-by: Varadhan M <varadhan@cem-solutions.net>
+---
+ modules/dialog/dialog.c        |   13 +++++++++++++
+ modules/dialog/dlg_tophiding.c |   36 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 49 insertions(+), 0 deletions(-)
+
+diff --git a/modules/dialog/dialog.c b/modules/dialog/dialog.c
+index c536d99..6b036e4 100644
+--- a/modules/dialog/dialog.c
++++ b/modules/dialog/dialog.c
+@@ -122,6 +122,8 @@ str cdb_url = {0,0};
+ /* topo hiding */
+ str topo_hiding_ct_params = {0,0};
+ str topo_hiding_ct_hdr_params = {0,0};
++str topo_hiding_ct_hdr_name = {0,0};
++str topo_hiding_ct_hdr_param_name = {0,0};
+ str topo_hiding_prefix = str_init("DLGCH_");
+ str topo_hiding_seed = str_init("OpenSIPS");
+ 
+@@ -286,6 +288,11 @@ static param_export_t mod_params[]={
+ 	/* dialog topology hiding with callid mangling */
+ 	{ "th_callid_passwd",  STR_PARAM, &topo_hiding_seed.s    },
+ 	{ "th_callid_prefix",STR_PARAM, &topo_hiding_prefix.s  },
++	{ "th_passed_contact_uri_params",STR_PARAM, &topo_hiding_ct_params.s },
++	{ "th_passed_contact_params",STR_PARAM, &topo_hiding_ct_hdr_params.s },
++	{ "th_dlg_contact_uri_params",STR_PARAM, &topo_hiding_ct_hdr_name.s },
++	{ "th_dlg_contact_params",STR_PARAM, &topo_hiding_ct_hdr_param_name.s },
++
+ 	{ 0,0,0 }
+ };
+ 
+@@ -656,6 +663,12 @@ static int mod_init(void)
+ 	dialog_table_name.len = strlen(dialog_table_name.s);
+ 	topo_hiding_prefix.len = strlen(topo_hiding_prefix.s);
+ 	topo_hiding_seed.len = strlen(topo_hiding_seed.s);
++	if(topo_hiding_ct_hdr_name.s) {
++		topo_hiding_ct_hdr_name.len = strlen(topo_hiding_ct_hdr_name.s) ;
++	}
++	if(topo_hiding_ct_hdr_param_name.s) {
++		topo_hiding_ct_hdr_param_name.len = strlen(topo_hiding_ct_hdr_param_name.s) ;
++	}
+ 	if (topo_hiding_ct_params.s) {
+ 		topo_hiding_ct_params.len = strlen(topo_hiding_ct_params.s);
+ 		dlg_parse_passed_ct_params(&topo_hiding_ct_params);
+diff --git a/modules/dialog/dlg_tophiding.c b/modules/dialog/dlg_tophiding.c
+index fc57a05..f9f82a1 100644
+--- a/modules/dialog/dlg_tophiding.c
++++ b/modules/dialog/dlg_tophiding.c
+@@ -45,6 +45,8 @@ extern str rr_param;
+ 
+ extern str topo_hiding_prefix;
+ extern str topo_hiding_seed;
++extern str topo_hiding_ct_hdr_name;
++extern str topo_hiding_ct_hdr_param_name;
+ 
+ #define RECORD_ROUTE "Record-Route: "
+ #define RECORD_ROUTE_LEN (sizeof(RECORD_ROUTE)-1)
+@@ -146,6 +148,8 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 	int prefix_len,suffix_len,ct_username_len=0;
+ 	struct sip_uri ctu;
+ 	str contact;
++	str dlg_ct_hdr_param_val = {0,0}; 
++	str dlg_ct_hdr_val = {0,0}; 
+ 	struct th_ct_params* el;
+ 	int i;
+ 	param_t *it;
+@@ -240,6 +244,15 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 		}
+ 	}
+ 
++	if(topo_hiding_ct_hdr_name.s && topo_hiding_ct_hdr_name.len>0) {
++		if (fetch_dlg_value(dlg, (str*)&topo_hiding_ct_hdr_name, &dlg_ct_hdr_val, 0) ) {
++			LM_DBG("No Contact hdr param dlg value set for dialog <%.*s>\n",
++				((str*)&topo_hiding_ct_hdr_name)->len, ((str*)&topo_hiding_ct_hdr_name)->s);
++		} else {
++			suffix_len += dlg_ct_hdr_val.len + 1; /* extra ';' */
++		}
++	}
++
+ 	suffix = pkg_malloc(suffix_len);
+ 	if (!suffix) {
+ 		LM_ERR("no more pkg\n");
+@@ -253,6 +266,13 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 	}
+ 
+ 	p_init = p = suffix;
++
++	if(dlg_ct_hdr_val.s && dlg_ct_hdr_val.len>0) {
++		*p++ = ';';
++		memcpy(p,dlg_ct_hdr_val.s,dlg_ct_hdr_val.len);
++		p += dlg_ct_hdr_val.len ;
++	}
++
+ 	*p++ = ';';
+ 	memcpy(p,rr_param.s,rr_param.len);
+ 	p+=rr_param.len;
+@@ -289,6 +309,22 @@ int dlg_replace_contact(struct sip_msg* msg, struct dlg_cell* dlg)
+ 	}
+ 
+ 	*p++ = '>';
++
++	if(topo_hiding_ct_hdr_param_name.s && topo_hiding_ct_hdr_param_name.len>0) {
++		if (fetch_dlg_value(dlg, (str*)&topo_hiding_ct_hdr_param_name, &dlg_ct_hdr_param_val, 0) ) {
++			LM_DBG("No Contact hdr param dlg value set for dialog <%.*s>\n",
++				((str*)&topo_hiding_ct_hdr_param_name)->len, ((str*)&topo_hiding_ct_hdr_param_name)->s);
++		} else {
++			suffix_len += dlg_ct_hdr_param_val.len + 1; /* extra ';' */
++		}
++	}
++
++	if(dlg_ct_hdr_param_val.s && dlg_ct_hdr_param_val.len>0) {
++		*p++ = ';';
++		memcpy(p,dlg_ct_hdr_param_val.s,dlg_ct_hdr_param_val.len);
++		p += dlg_ct_hdr_param_val.len ;
++	}
++
+ 	if (th_hdr_param_list) {
+ 		if ( parse_contact(msg->contact)<0 ||
+ 			((contact_body_t *)msg->contact->parsed)->contacts==NULL ||
+-- 
+1.7.1
+
