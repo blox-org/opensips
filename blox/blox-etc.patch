@@ -1,0 +1,37 @@
+From 4ab3ab38e3e0e384889f2589e40710d8075cff36 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Tue, 28 Apr 2015 23:41:22 -0700
+Subject: [PATCH] added etc directory
+
+---
+ etc/opensips.conf.rsyslog |    2 ++
+ etc/opensips.logrotate    |    8 ++++++++
+ 2 files changed, 10 insertions(+), 0 deletions(-)
+ create mode 100644 etc/opensips.conf.rsyslog
+ create mode 100644 etc/opensips.logrotate
+
+diff --git a/etc/opensips.conf.rsyslog b/etc/opensips.conf.rsyslog
+new file mode 100644
+index 0000000..a6e04fd
+--- /dev/null
++++ b/etc/opensips.conf.rsyslog
+@@ -0,0 +1,2 @@
++local0.*                               -/var/log/opensips.log
++local0.info                            -/var/log/lcr.log
+diff --git a/etc/opensips.logrotate b/etc/opensips.logrotate
+new file mode 100644
+index 0000000..5049e02
+--- /dev/null
++++ b/etc/opensips.logrotate
+@@ -0,0 +1,8 @@
++/var/log/opensips.log
++/var/log/lcr.log {
++    size 100M
++    sharedscripts
++    postrotate
++	/bin/kill -HUP `cat /var/run/syslogd.pid 2>/dev/null` 2>/dev/null || true
++    endscript
++}
+-- 
+1.7.1
+

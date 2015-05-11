@@ -1,0 +1,101 @@
+From 4c5d7695262da1b0a2f8a0aea5a96cd60a9b5af3 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Wed, 29 Apr 2015 04:05:08 -0700
+Subject: [PATCH] other changes patches, added opensipsctlrc configration
+
+---
+ scripts/opensipsctlrc |   34 ++++++++++++++++------------------
+ 1 files changed, 16 insertions(+), 18 deletions(-)
+
+diff --git a/scripts/opensipsctlrc b/scripts/opensipsctlrc
+index 8b9fcd7..787f38b 100644
+--- a/scripts/opensipsctlrc
++++ b/scripts/opensipsctlrc
+@@ -7,7 +7,7 @@
+ # will use their internal default values.
+ 
+ ## your SIP domain
+-# SIP_DOMAIN=opensips.org
++# SIP_DOMAIN=cem-solutions.net
+ 
+ ## chrooted directory
+ # $CHROOT_DIR="/path/to/chrooted/directory"
+@@ -16,31 +16,33 @@
+ ## by default none is loaded
+ # If you want to setup a database with opensipsdbctl, you must at least specify
+ # this parameter.
+-# DBENGINE=MYSQL
++DBENGINE=MYSQL
+ 
+ ## database host
+-# DBHOST=localhost
++DBHOST=localhost
+ 
+ ## database name (for ORACLE this is TNS name)
+-# DBNAME=opensips
++DBNAME=opensips_1_11
+ 
+ # database path used by dbtext or db_berkeley
+ # DB_PATH="/usr/local/etc/opensips/dbtext"
+ 
+ ## database read/write user
+-# DBRWUSER=opensips
++DBRWUSER=opensips
+ 
+ ## password for database read/write user
+-# DBRWPW="opensipsrw"
++#DBRWPW="opensips110"
++#DBRWPW="opensipsrw"
++DBRWPW="opensipsrw"
++#DBROUSER=opensipsro
++#DBROPW=opensipsro
+ 
+ ## database super user (for ORACLE this is 'scheme-creator' user)
+-# DBROOTUSER="root"
++DBROOTUSER="root"
+ 
+ # user name column
+ # USERCOL="username"
+ 
+-## for testing / development
+-#ETCDIR=etc/
+ 
+ # SQL definitions
+ # If you change this definitions here, then you must change them 
+@@ -56,19 +58,16 @@
+ 
+ 
+ # Program to calculate a message-digest fingerprint 
+-# MD5="md5sum"
++MD5="md5sum"
+ 
+ # awk tool
+-# AWK="awk"
+-
+-# gdb tool
+-# GDB="gdb"
++AWK="awk"
+ 
+ # grep tool
+-# GREP="grep"
++GREP="grep"
+ 
+ # sed tool
+-# SED="sed"
++SED="sed"
+ 
+ 
+ # Describe what additional tables to install. Valid values for the variables
+@@ -93,8 +92,7 @@
+ #                   dispatcher dialplan drouting nathelper load_balancer"
+ 
+ # opensips extra modules
+-# EXTRA_MODULES="imc cpl siptrace domainpolicy carrierroute userblacklist 
+-#                 b2b registrant call_center"
++# EXTRA_MODULES="imc cpl siptrace domainpolicy carrierroute userblacklist b2b registrant"
+ 
+ 
+ ## type of aliases used: DB - database aliases; UL - usrloc aliases
+-- 
+1.7.1
+
