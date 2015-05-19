@@ -1,0 +1,25 @@
+From 3937a66e843e619a6c63d0750f3ee262ff8e5286 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Tue, 19 May 2015 03:20:57 -0700
+Subject: [PATCH] Increased support for URI_MAX_U_PARAMS from 10 to 16
+
+---
+ parser/msg_parser.h |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/parser/msg_parser.h b/parser/msg_parser.h
+index 34ec7c4..c4c6f5d 100644
+--- a/parser/msg_parser.h
++++ b/parser/msg_parser.h
+@@ -108,7 +108,7 @@ enum request_method {
+ 									  * callbacks were registered */
+ 
+ /* define the # of unknown URI parameters to parse */
+-#define URI_MAX_U_PARAMS 10
++#define URI_MAX_U_PARAMS 16
+ 
+ #define IFISMETHOD(methodname,firstchar)                                  \
+ if (  (*tmp==(firstchar) || *tmp==((firstchar) | 32)) &&                  \
+-- 
+1.7.1
+
