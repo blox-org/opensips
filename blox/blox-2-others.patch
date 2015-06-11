@@ -1,0 +1,255 @@
+From 3ab5d0cf7f68f584c3f7de717782c27426677663 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Thu, 11 Jun 2015 04:46:33 -0700
+Subject: [PATCH] Patch for bash issue with log concatenation of variable USAGE_FUNCTIONS
+
+---
+ scripts/opensipsctl.base        |   18 +++++++++---------
+ scripts/opensipsctl.ctlbase     |   10 +++++-----
+ scripts/opensipsctl.db_berkeley |    4 ++--
+ scripts/opensipsctl.fifo        |    2 +-
+ scripts/opensipsctl.sqlbase     |   10 +++++-----
+ scripts/opensipsctl.unixsock    |    2 +-
+ scripts/opensipsctlrc           |    2 +-
+ 7 files changed, 24 insertions(+), 24 deletions(-)
+
+diff --git a/scripts/opensipsctl.base b/scripts/opensipsctl.base
+index c4564f8..429ced0 100644
+--- a/scripts/opensipsctl.base
++++ b/scripts/opensipsctl.base
+@@ -389,7 +389,7 @@ cat <<EOF
+ EOF
+ }
+ 
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_base"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_base"
+ 
+ usage_acl() {
+ 	echo
+@@ -401,7 +401,7 @@ cat <<EOF
+  acl revoke <username> [<group>] .... grant user membership(s) (*)
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_acl"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_acl"
+ 
+ usage_cr() {
+ 	echo
+@@ -421,7 +421,7 @@ cat <<EOF
+  cr rmcarrier  <carrier> <scan_prefix> <domain> ................ rm a carrier
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_cr"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_cr"
+ 
+ usage_rpid() {
+ 	echo
+@@ -433,7 +433,7 @@ cat <<EOF
+  rpid show <username> ............... show rpid of a user
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_rpid"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_rpid"
+ 
+ usage_subscriber() {
+ 	echo
+@@ -445,7 +445,7 @@ cat <<EOF
+  rm <username> ...................... delete a user (*)
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_subscriber"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_subscriber"
+ 
+ usage_address() {
+ 	echo
+@@ -462,7 +462,7 @@ cat <<EOF
+ 	     ....................... for the given grp ip mask port
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_address"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_address"
+ 
+ usage_dr() {
+ 	echo
+@@ -498,7 +498,7 @@ cat <<EOF
+  dr carrier_status .................. show carrier status
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_dr"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_dr"
+ 
+ usage_dispatcher() {
+ 	echo
+@@ -516,7 +516,7 @@ cat <<EOF
+  dispatcher rmgw <id> ................ delete gateway
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_dispatcher"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_dispatcher"
+ 
+ usage_dialplan() {
+ 	echo
+@@ -549,7 +549,7 @@ cat <<EOF
+  registrant rmaor <id> ................... removes the gived aor id
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_registrant"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_registrant"
+ 
+ ##### ----------------------------------------------- #####
+ #### Common functions
+diff --git a/scripts/opensipsctl.ctlbase b/scripts/opensipsctl.ctlbase
+index 65917ef..0545083 100644
+--- a/scripts/opensipsctl.ctlbase
++++ b/scripts/opensipsctl.ctlbase
+@@ -26,7 +26,7 @@ cat <<EOF
+  cisco_restart <uri> ................ restart phone configured for <uri>
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_cisco_restart"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_cisco_restart"
+ 
+ usage_online() {
+ 	echo
+@@ -36,7 +36,7 @@ cat <<EOF
+  online ............................. display online users
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_online"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_online"
+ 
+ usage_opensips_monitor() {
+ 	echo
+@@ -46,7 +46,7 @@ cat <<EOF
+  monitor ............................ show server's internal status
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_opensips_monitor"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_opensips_monitor"
+ 
+ usage_ping() {
+ 	echo
+@@ -56,7 +56,7 @@ cat <<EOF
+  ping <uri> ......................... ping <uri> with SIP OPTIONS
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_ping"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_ping"
+ 
+ usage_usrloc() {
+ 	echo
+@@ -70,5 +70,5 @@ cat <<EOF
+  ul add <username> <uri> <expires> .. introduce a temporary usrloc entry
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_usrloc"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_usrloc"
+ 
+diff --git a/scripts/opensipsctl.db_berkeley b/scripts/opensipsctl.db_berkeley
+index fdf84b1..751ef4b 100644
+--- a/scripts/opensipsctl.db_berkeley
++++ b/scripts/opensipsctl.db_berkeley
+@@ -45,7 +45,7 @@ cat <<EOF
+  domain rm <domainname> ............. remove a served domain
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_domain"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_domain"
+ 
+ # showdb is not implemented for SQL databases
+ usage_showdb() {
+@@ -57,5 +57,5 @@ cat <<EOF
+  userdb ............................. display offline users
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_showdb"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_showdb"
+ 
+diff --git a/scripts/opensipsctl.fifo b/scripts/opensipsctl.fifo
+index 594ec54..65426a0 100644
+--- a/scripts/opensipsctl.fifo
++++ b/scripts/opensipsctl.fifo
+@@ -39,7 +39,7 @@ cat <<EOF
+  fifo ............................... send raw FIFO command
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_fifo"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_fifo"
+ 
+ 
+ fifo_cmd()
+diff --git a/scripts/opensipsctl.sqlbase b/scripts/opensipsctl.sqlbase
+index b19baf3..ffd90ff 100644
+--- a/scripts/opensipsctl.sqlbase
++++ b/scripts/opensipsctl.sqlbase
+@@ -54,7 +54,7 @@ cat <<EOF
+  db show <table> ..................... display table content
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_db_ops"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_db_ops"
+ 
+ # speeddial not implemented for dbtext
+ usage_speeddial() {
+@@ -74,7 +74,7 @@ cat <<EOF
+     - <desc> a description for speeddial
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_speeddial"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_speeddial"
+ 
+ # avp operations not implemented for dbtext
+ usage_avp() {
+@@ -99,7 +99,7 @@ cat <<EOF
+     - <uuid> must be a string but not AoR
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_avp"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_avp"
+ 
+ # alias_db not implemented for dbtext
+ usage_alias_db() {
+@@ -116,7 +116,7 @@ cat <<EOF
+     - <sip-id> must be an AoR (username@domain)"
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_alias_db"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_alias_db"
+ 
+ usage_domain() {
+ 	echo
+@@ -130,4 +130,4 @@ cat <<EOF
+  domain rm <domain> .................. delete the domain from the database
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_domain"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_domain"
+diff --git a/scripts/opensipsctl.unixsock b/scripts/opensipsctl.unixsock
+index f143085..40d64ef 100644
+--- a/scripts/opensipsctl.unixsock
++++ b/scripts/opensipsctl.unixsock
+@@ -44,7 +44,7 @@ cat <<EOF
+  unixsock ........................... send raw unixsock command
+ EOF
+ }
+-USAGE_FUNCTIONS="$USAGE_FUNCTIONS usage_unixsock"
++USAGE_FUNCTIONS=$USAGE_FUNCTIONS" usage_unixsock"
+ 
+ 
+ unixsock_cmd()
+diff --git a/scripts/opensipsctlrc b/scripts/opensipsctlrc
+index 787f38b..9fa1bc9 100644
+--- a/scripts/opensipsctlrc
++++ b/scripts/opensipsctlrc
+@@ -120,7 +120,7 @@ SED="sed"
+ # ACL_GROUPS="local ld int voicemail free-pstn"
+ 
+ ## verbose - debug purposes - default '0'
+-# VERBOSE=1
++VERBOSE=1
+ 
+ ## do (1) or don't (0) store plaintext passwords
+ ## in the subscriber table - default '1'
+-- 
+1.7.1
+
