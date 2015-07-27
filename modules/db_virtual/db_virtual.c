@@ -244,13 +244,23 @@ int init_global(void){//str *info_set_mapping){
                 count++;
             }
             else{
+				if (count == -1) {
+					LM_ERR("db_virtual module cannot start with no DB sets defined!\n");
+					return -1;
+				}
+
                 /* mysql:........ */
                 LM_DBG("db = %s\n", s);
                 add_url(count, s);
             }
         }
-
     }
+
+	if (!global) {
+		LM_ERR("db_virtual module cannot start with no DB URLs defined!\n");
+		return -1;
+	}
+
     for(i = 0; i< global->size; i++)
         for(j=0; j<global->set_list[i].size; j++){
 
@@ -340,9 +350,8 @@ int virtual_mod_init(void){
 
         if(!global){
             int i,j;
-            int rc;
-            rc = init_global();
-            rc |= init_private_handles();
+            if (init_global() || init_private_handles())
+				return -1;
 
             //print structure
             for(i = 0; i< global->size; i++){
@@ -363,8 +372,6 @@ int virtual_mod_init(void){
                     LM_ERR("failed to register keepalive timer process\n");
                 }
             }
-
-            return rc;
         }
 
         return 0;
