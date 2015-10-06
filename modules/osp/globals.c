@@ -33,6 +33,7 @@
 #include "../../usr_avp.h"
 #include "osp_mod.h"
 
+int _osp_inbound_avpid = OSP_DEF_AVP;
 int _osp_origdest_avpid = OSP_DEF_AVP;
 int _osp_termdest_avpid = OSP_DEF_AVP;
 int _osp_calling_avpid = OSP_DEF_AVP;
@@ -82,6 +83,14 @@ unsigned short _osp_snid_avptype;
 char* _osp_cinfo_avp = OSP_DEF_CINFOAVP;
 int_str _osp_cinfo_avpid;
 unsigned short _osp_cinfo_avptype;
-
+char* _osp_cnam_avp = OSP_DEF_CNAMAVP;
+int_str _osp_cnam_avpid;
+unsigned short _osp_cnam_avptype;
+char* _osp_srcmedia_avp = OSP_DEF_SRCMEDIAAVP;
+int_str _osp_srcmedia_avpid;
+unsigned short _osp_srcmedia_avptype;
+char* _osp_destmedia_avp = OSP_DEF_DESTMEDIAAVP;
+int_str _osp_destmedia_avpid;
+unsigned short _osp_destmedia_avptype;
 OSPTPROVHANDLE _osp_provider = -1;
 
