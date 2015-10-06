@@ -1,0 +1,25 @@
+From d2316a5f0a8e07c4d88a5edcc03f328bd944ebde Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Tue, 6 Oct 2015 01:45:01 -0700
+Subject: [PATCH] Patch Added to enable callid decode for NOTIFY during REFER Call transfer
+
+---
+ modules/dialog/dlg_tophiding.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/modules/dialog/dlg_tophiding.c b/modules/dialog/dlg_tophiding.c
+index f9f82a1..9fd1f30 100644
+--- a/modules/dialog/dlg_tophiding.c
++++ b/modules/dialog/dlg_tophiding.c
+@@ -1317,7 +1317,7 @@ static inline char *dlg_th_rebuild_rpl(struct sip_msg *msg,int *len)
+ 			NULL,MSG_TRANS_NOVIA_FLAG);
+ }
+ 
+-#define MSG_SKIP_BITMASK	(METHOD_REGISTER|METHOD_PUBLISH|METHOD_NOTIFY|METHOD_SUBSCRIBE)
++#define MSG_SKIP_BITMASK	(METHOD_REGISTER|METHOD_PUBLISH|METHOD_SUBSCRIBE)
+ int dlg_th_callid_pre_parse(struct sip_msg *msg,int want_from)
+ {
+ 	/* do not throw errors from the upcoming parsing operations */
+-- 
+1.7.1
+
