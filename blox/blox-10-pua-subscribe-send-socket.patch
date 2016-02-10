@@ -1,0 +1,674 @@
+From ec2dea1dea254ec8392443421103c5162a3e6eeb Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Wed, 10 Feb 2016 03:44:45 -0800
+Subject: [PATCH] Support for pua_subscribe mi to use send_socket
+
+---
+ modules/imc/imc_cmd.c             |    5 ++
+ modules/jabber/xjab_worker.c      |    4 +-
+ modules/load_balancer/lb_prober.c |    2 +-
+ modules/msilo/msilo.c             |    3 +
+ modules/pua/hash.c                |    5 ++
+ modules/pua/hash.h                |    1 +
+ modules/pua/pua.c                 |    1 +
+ modules/pua/send_publish.c        |   11 +---
+ modules/pua/send_subscribe.c      |   88 ++++++++++++++++++++++++++++-----
+ modules/pua/send_subscribe.h      |    1 +
+ modules/pua_mi/mi_func.c          |   33 ++++++++++--
+ modules/sms/sms_funcs.c           |    1 +
+ modules/tm/uac.c                  |   18 ++++++-
+ modules/tm/uac.h                  |    5 +-
+ modules/usrloc/ul_mi.c            |   98 ++++++++++++++++++++++++++++++++++++-
+ modules/xmpp/xmpp.c               |    1 +
+ 16 files changed, 242 insertions(+), 35 deletions(-)
+
+diff --git a/modules/imc/imc_cmd.c b/modules/imc/imc_cmd.c
+index 43efd58..3be2d88 100644
+--- a/modules/imc/imc_cmd.c
++++ b/modules/imc/imc_cmd.c
+@@ -494,6 +494,7 @@ int imc_handle_invite(struct sip_msg* msg, imc_cmd_t *cmd,
+ 				&imc_hdr_ctype,							/* Extra headers */
+ 				&body,						            /* Message body */
+ 				(outbound_proxy.s)?&outbound_proxy:NULL,/* outbound proxy*/
++				NULL, /* Send Socket */
+ 				imc_inv_callback,						/* callback function*/
+ 				(void*)(cback_param),					/* callback param*/
+ 				NULL
+@@ -982,6 +983,7 @@ int imc_handle_help(struct sip_msg* msg, imc_cmd_t *cmd, str *src, str *dst)
+ 				&imc_hdr_ctype,							/* Headers */
+ 				&body,									/* Body */
+ 				(outbound_proxy.s)?&outbound_proxy:NULL,/* outbound proxy */
++				NULL, /* Send Socket */
+ 				NULL,									/* callback function */
+ 				NULL,									/* callback parameter*/
+ 				NULL
+@@ -1015,6 +1017,7 @@ int imc_handle_unknown(struct sip_msg* msg, imc_cmd_t *cmd, str *src, str *dst)
+ 				&imc_hdr_ctype,							/* Headers */
+ 				&body,									/* Body */
+ 				(outbound_proxy.s)?&outbound_proxy:NULL,/* outbound proxy */
++				NULL, /* Send Socket */
+ 				NULL,									/* callback function */
+ 				NULL,									/* callback parameter*/
+ 				NULL
+@@ -1122,6 +1125,7 @@ int imc_send_message(str *src, str *dst, str *headers, str *body)
+ 			headers,									/* Headers */
+ 			body,										/* Body */
+ 			(outbound_proxy.s)?&outbound_proxy:NULL,	/* outbound proxy */
++			NULL, /* Send Socket */
+ 			NULL,										/* callback function */
+ 			NULL,										/* callback parameter */
+ 			NULL
+@@ -1216,6 +1220,7 @@ send_message:
+ 					NULL,									/* Headers */
+ 					&body_final,							/* Body */
+ 					(outbound_proxy.s)?&outbound_proxy:NULL,/* outbound proxy*/
++					NULL, /* Send Socket */
+ 					NULL,								/* callback function */
+ 					NULL,								/* callback parameter*/
+ 					NULL
+diff --git a/modules/jabber/xjab_worker.c b/modules/jabber/xjab_worker.c
+index 056f5ee..4c8a695 100644
+--- a/modules/jabber/xjab_worker.c
++++ b/modules/jabber/xjab_worker.c
+@@ -1184,10 +1184,10 @@ int xj_send_sip_msg(str *proxy, str *to, str *from, str *msg, int *cbp)
+ 		LM_DBG("uac callback parameter [%p==%d]\n", cbp, *cbp);
+ #endif
+ 		return tmb.t_request(&msg_type, 0, to, &tfrom, &str_hdr, msg,
+-						0, xj_tuac_callback, (void*)cbp, 0);
++						0, 0, xj_tuac_callback, (void*)cbp, 0);
+ 	}
+ 	else
+-		return tmb.t_request(&msg_type, 0, to, &tfrom, &str_hdr, msg, 0, 0, 0, 0);
++		return tmb.t_request(&msg_type, 0, to, &tfrom, &str_hdr, msg, 0, 0, 0, 0, 0);
+ }
+ 
+ /**
+diff --git a/modules/load_balancer/lb_prober.c b/modules/load_balancer/lb_prober.c
+index 00e6c7f..2577b3a 100644
+--- a/modules/load_balancer/lb_prober.c
++++ b/modules/load_balancer/lb_prober.c
+@@ -75,7 +75,7 @@ void lb_do_probing(struct lb_data *data)
+ 			continue;
+ 
+ 		if (lb_tmb.t_request( &lb_probe_method, &dst->uri, &dst->uri,
+-		&lb_probe_from, NULL, NULL, NULL, lb_probing_callback,
++		&lb_probe_from, NULL, NULL, NULL, NULL, lb_probing_callback,
+ 		(void*)(long)dst->id, NULL) < 0) {
+ 			LM_ERR("probing failed\n");
+ 		}
+diff --git a/modules/msilo/msilo.c b/modules/msilo/msilo.c
+index 28b83ea..ca3aedf 100644
+--- a/modules/msilo/msilo.c
++++ b/modules/msilo/msilo.c
+@@ -766,6 +766,7 @@ static int m_store(struct sip_msg* msg, char* owner, char* s2)
+ 			&str_hdr,         /* Optional headers including CRLF */
+ 			&notify_body,     /* Message body */
+ 			(ms_outbound_proxy.s)?&ms_outbound_proxy:0, /* outbound uri */
++			NULL,             /* Send Socket */
+ 			NULL,             /* Callback function */
+ 			NULL,             /* Callback parameter */
+ 			NULL
+@@ -971,6 +972,7 @@ static int m_dump(struct sip_msg* msg, char* owner, char* str2)
+ 					&hdr_str,         /* Optional headers including CRLF */
+ 					(n<0)?(RES_ROWS(db_res)[i].values[3].nul?NULL:&str_vals[2]):&body_str, /* Message body */
+ 					(ms_outbound_proxy.s)?&ms_outbound_proxy:0,
++					NULL,             /* Send Socket */
+ 									/* outbound uri */
+ 					m_tm_callback,    /* Callback function */
+ 					(void*)(long)mid, /* Callback parameter */
+@@ -1235,6 +1237,7 @@ void m_send_ontimer(unsigned int ticks, void *param)
+ 					&hdr_str,         /* Optional headers including CRLF */
+ 					(n<0)?&str_vals[2]:&body_str, /* Message body */
+ 					(ms_outbound_proxy.s)?&ms_outbound_proxy:0,
++					NULL,             /* Send Socket */
+ 							/* outbound uri */
+ 					m_tm_callback,    /* Callback function */
+ 					(void*)(long)mid,  /* Callback parameter */
+diff --git a/modules/pua/hash.c b/modules/pua/hash.c
+index 05a5ddb..5a8ffb8 100644
+--- a/modules/pua/hash.c
++++ b/modules/pua/hash.c
+@@ -70,6 +70,11 @@ void print_ua_pres(ua_pres_t* p)
+ 		else
+ 			LM_DBG("etag=[%.*s]\n", p->etag.len, p->etag.s);
+ 	}
++
++	if(p->force_socket && p->force_socket->s && p->force_socket->len >0)  {
++		LM_DBG("force_socket=[%.*s]\n", p->force_socket->len, p->force_socket->s);
++	}
++
+ 	LM_DBG("flag=[%d] event=[%d]\n", p->flag, p->event);
+ 	if (p->extra_headers.s && p->extra_headers.len)
+ 		LM_DBG("extra_headers=[%.*s]\n",
+diff --git a/modules/pua/hash.h b/modules/pua/hash.h
+index 34c62c4..aae4061 100644
+--- a/modules/pua/hash.h
++++ b/modules/pua/hash.h
+@@ -111,6 +111,7 @@ typedef struct ua_pres{
+ 	str remote_contact;
+ 	str contact;
+ 	void* cb_param;
++	str *force_socket;
+ }ua_pres_t;
+ 
+ typedef struct hash_entry
+diff --git a/modules/pua/pua.c b/modules/pua/pua.c
+index 6768002..0519809 100644
+--- a/modules/pua/pua.c
++++ b/modules/pua/pua.c
+@@ -700,6 +700,7 @@ int update_pua(ua_pres_t* p, unsigned int hash_code, unsigned int final)
+ 				str_hdr,               /* Optional headers */
+ 				0,                     /* Message body */
+ 				(p->outbound_proxy)?p->outbound_proxy:0,/* Outbound proxy*/
++				NULL,
+ 				publ_cback_func,       /* Callback function */
+ 				(void*)cb_param,       /* Callback parameter*/
+ 				0
+diff --git a/modules/pua/send_publish.c b/modules/pua/send_publish.c
+index 7c775ea..a6f7579 100644
+--- a/modules/pua/send_publish.c
++++ b/modules/pua/send_publish.c
+@@ -477,23 +477,18 @@ int send_publish_int(ua_pres_t* presentity, publ_info_t* publ, pua_event_t* ev,
+ 
+ 	LM_DBG("cback param = %ld\n", pres_id);
+ 
+-	if (tmb.t_request(&met,						/* Type of the message */
++	tmb.t_request(&met,						/* Type of the message */
+ 			publ->pres_uri,							/* Request-URI */
+ 			publ->pres_uri,							/* To */
+ 			publ->pres_uri,							/* From */
+ 			str_hdr,								/* Optional headers */
+ 			body,									/* Message body */
+ 			((publ->outbound_proxy.s)?&publ->outbound_proxy:0),/*Outbound proxy*/
++			NULL, /* Send socket */
+ 			publ->expires?publ_cback_func:0,		/* Callback function */
+ 			(void*)pres_id,							/* Callback parameter */
+ 			0
+-			) < 0 )
+-	{
+-		LM_ERR("failed to send PUBLISH\n");
+-		ret = -1;
+-		goto error;
+-	}
+-
++			);
+ 	pkg_free(str_hdr);
+ 
+ 	if(body && ev->process_body)
+diff --git a/modules/pua/send_subscribe.c b/modules/pua/send_subscribe.c
+index 0989a11..593fdd4 100644
+--- a/modules/pua/send_subscribe.c
++++ b/modules/pua/send_subscribe.c
+@@ -52,6 +52,8 @@ void print_subs(subs_info_t* subs)
+ 			subs->pres_uri->len,  subs->pres_uri->s);
+ 	LM_DBG("watcher_uri[%d]=[%.*s]\n", subs->watcher_uri->len,
+ 			subs->watcher_uri->len,  subs->watcher_uri->s);
++	LM_DBG("force_socket[%d]=[%.*s]\n", subs->force_socket->len,
++			subs->force_socket->len,  subs->force_socket->s);
+ 	if(subs->to_uri.s)
+ 		LM_DBG("to_uri=[%.*s]\n", subs->to_uri.len, subs->to_uri.s);
+ }
+@@ -132,6 +134,9 @@ error:
+ dlg_t* pua_build_dlg_t(ua_pres_t* presentity)
+ {
+ 	dlg_t* td =NULL;
++	str host;
++	int port, proto;
++
+ 	int size;
+ 
+ 	size= sizeof(dlg_t)+ presentity->call_id.len+ presentity->to_tag.len+
+@@ -179,6 +184,26 @@ dlg_t* pua_build_dlg_t(ua_pres_t* presentity)
+ 	td->rem_target.len = presentity->remote_contact.len;
+ 	size+= td->rem_target.len;
+ 
++	
++	if(presentity->force_socket && presentity->force_socket->s && presentity->force_socket->len > 0) {
++		if (parse_phostport(presentity->force_socket->s,
++				presentity->force_socket->len,
++				&host.s, &host.len,
++				&port, &proto)<0) {
++			LM_ERR("subscribe cannot parse forced socket [%.*s]\n",
++				presentity->force_socket->len, presentity->force_socket->s);
++		} else {
++			td->send_sock = grep_sock_info(&host,
++					(unsigned short) port,
++					(unsigned short) proto);
++		}
++
++		if (td->send_sock==NULL) {
++			LM_ERR("subscribe invalid forced socket [%.*s]\n",
++				presentity->force_socket->len, presentity->force_socket->s);
++		}
++	}
++
+ 	if(presentity->record_route.s && presentity->record_route.len)
+ 	{
+ 		if(parse_rr_body(presentity->record_route.s, presentity->record_route.len,
+@@ -368,6 +393,7 @@ void subs_cback_func(struct cell *t, int cb_type, struct tmcb_params *ps)
+ 			subs.event= hentity->event;
+ 			subs.id= hentity->id;
+ 			subs.outbound_proxy= hentity->outbound_proxy;
++			subs.force_socket = hentity->force_socket;
+ 			subs.extra_headers= &hentity->extra_headers;
+ 			subs.cb_param= hentity->cb_param;
+ 
+@@ -596,6 +622,9 @@ ua_pres_t* subscribe_cbparam(subs_info_t* subs, int ua_flag)
+ 	if(subs->outbound_proxy && subs->outbound_proxy->len && subs->outbound_proxy->s )
+ 		size+= sizeof(str)+ subs->outbound_proxy->len* sizeof(char);
+ 
++	if(subs->force_socket && subs->force_socket->len && subs->force_socket->s )
++		size+= sizeof(str)+ subs->force_socket->len* sizeof(char);
++
+ 	hentity= (ua_pres_t*)shm_malloc(size);
+ 	if(hentity== NULL)
+ 	{
+@@ -639,6 +668,16 @@ ua_pres_t* subscribe_cbparam(subs_info_t* subs, int ua_flag)
+ 		hentity->outbound_proxy->len= subs->outbound_proxy->len;
+ 		size+= subs->outbound_proxy->len;
+ 	}
++	if(subs->force_socket)
++	{
++		hentity->force_socket= (str*)((char*)hentity+ size);
++		size+= sizeof(str);
++		hentity->force_socket->s= (char*)hentity+ size;
++		memcpy(hentity->force_socket->s, subs->force_socket->s, subs->force_socket->len);
++		hentity->force_socket->len= subs->force_socket->len;
++		size+= subs->force_socket->len;
++	}
++
+ 	if(subs->expires< 0)
+ 		hentity->desired_expires= 0;
+ 	else
+@@ -691,6 +730,9 @@ ua_pres_t* subs_cbparam_indlg(ua_pres_t* subs, int expires, int ua_flag)
+ 	if(subs->outbound_proxy && subs->outbound_proxy->len && subs->outbound_proxy->s )
+ 		size+= sizeof(str)+ subs->outbound_proxy->len;
+ 
++	if(subs->force_socket && subs->force_socket->len && subs->force_socket->s )
++		size+= sizeof(str)+ subs->force_socket->len;
++
+ 	if(subs->remote_contact.s)
+ 		size+= subs->remote_contact.len;
+ 
+@@ -735,6 +777,16 @@ ua_pres_t* subs_cbparam_indlg(ua_pres_t* subs, int expires, int ua_flag)
+ 		size+= subs->outbound_proxy->len;
+ 	}
+ 
++	if(subs->force_socket)
++	{
++		hentity->force_socket= (str*)((char*)hentity+ size);
++		size+= sizeof(str);
++		hentity->force_socket->s= (char*)hentity+ size;
++		memcpy(hentity->force_socket->s, subs->force_socket->s, subs->force_socket->len);
++		hentity->force_socket->len= subs->force_socket->len;
++		size+= subs->force_socket->len;
++	}
++
+ 	if(subs->id.s)
+ 	{
+ 		CONT_COPY(hentity, hentity->id, subs->id);
+@@ -827,6 +879,7 @@ int send_subscribe(subs_info_t* subs)
+ 	memset(&pres, 0, sizeof(ua_pres_t));
+ 	pres.pres_uri   = subs->pres_uri;
+ 	pres.watcher_uri= subs->watcher_uri;
++	pres.force_socket = subs->force_socket;
+ 	if(subs->to_uri.s)
+ 		pres.to_uri = subs->to_uri;
+ 	else
+@@ -874,18 +927,20 @@ int send_subscribe(subs_info_t* subs)
+ 		hentity->hash_index = hash_index;
+ 		hentity->flag= flag;
+ 
+-		result= tmb.t_request
+-			(&met,                       /* Type of the message */
+-			pres.pres_uri,               /* Request-URI*/
+-			&pres.to_uri,                /* To */
+-			pres.watcher_uri,            /* From */
+-			str_hdr,                      /* Optional headers including CRLF */
+-			0,                            /* Message body */
+-			subs->outbound_proxy,         /* Outbound_proxy */
+-			subs_cback_func,              /* Callback function */
+-			(void*)hentity,               /* Callback parameter */
+-			0
+-			);
++                result= tmb.t_request
++                        (&met,                       /* Type of the message */
++                        pres.pres_uri,               /* Request-URI*/
++                        &pres.to_uri,                /* To */
++                        pres.watcher_uri,            /* From */
++                        str_hdr,                      /* Optional headers including CRLF */
++                        0,                            /* Message body */
++                        subs->outbound_proxy,         /* Outbound_proxy */
++			subs->force_socket,
++                        subs_cback_func,              /* Callback function */
++                        (void*)hentity,               /* Callback parameter */
++                        0
++                        );
++
+ 		if(result< 0)
+ 		{
+ 			LM_ERR("while sending request with t_request\n");
+@@ -956,6 +1011,15 @@ int send_subscribe(subs_info_t* subs)
+ 			goto done;
+ 		}
+ 
++		if(presentity->force_socket && presentity->force_socket->s && presentity->force_socket->len > 0) {
++			LM_INFO("+++++++presentity forced socket [%.*s]\n",
++				presentity->force_socket->len, presentity->force_socket->s);
++		} else {
++			presentity->force_socket = subs->force_socket ;
++			LM_INFO("+++++++adding to presentity forced socket [%.*s]\n",
++				presentity->force_socket->len, presentity->force_socket->s);
++		}
++
+ 		td= pua_build_dlg_t(presentity);
+ 		if(td== NULL)
+ 		{
+diff --git a/modules/pua/send_subscribe.h b/modules/pua/send_subscribe.h
+index d29cb79..facab53 100644
+--- a/modules/pua/send_subscribe.h
++++ b/modules/pua/send_subscribe.h
+@@ -36,6 +36,7 @@ typedef struct subs_info
+ {
+ 	str id;
+ 	str* pres_uri;
++	str* force_socket;
+ 	str to_uri;
+ 	str* watcher_uri;
+ 	str* contact;
+diff --git a/modules/pua_mi/mi_func.c b/modules/pua_mi/mi_func.c
+index f545949..288ce2d 100644
+--- a/modules/pua_mi/mi_func.c
++++ b/modules/pua_mi/mi_func.c
+@@ -344,7 +344,8 @@ error:
+ struct mi_root* mi_pua_subscribe(struct mi_root* cmd, void* param)
+ {
+ 	int exp= 0;
+-	str pres_uri, watcher_uri, expires;
++	str pres_uri, watcher_uri, force_socket, expires;
++	str extra ;
+ 	struct mi_node* node= NULL;
+ 	struct mi_root* rpl= NULL;
+ 	struct sip_uri uri;
+@@ -352,6 +353,7 @@ struct mi_root* mi_pua_subscribe(struct mi_root* cmd, void* param)
+ 	int sign= 1;
+ 	str event;
+ 
++	memset(&subs, 0, sizeof(subs_info_t));
+ 	node = cmd->node.kids;
+ 	if(node == NULL)
+ 		return 0;
+@@ -396,11 +398,8 @@ struct mi_root* mi_pua_subscribe(struct mi_root* cmd, void* param)
+ 	LM_DBG("event '%.*s'\n", event.len, event.s);
+ 
+ 	node = node->next;
+-	if(node == NULL || node->next!=NULL)
+-	{
+-		LM_ERR("Too much or too many parameters\n");
++	if(node == NULL)
+ 		return 0;
+-	}
+ 
+ 	expires= node->value;
+ 	if(expires.s== NULL || expires.len== 0)
+@@ -424,17 +423,39 @@ struct mi_root* mi_pua_subscribe(struct mi_root* cmd, void* param)
+ 
+ 	LM_DBG("expires '%d'\n", exp);
+ 
+-	memset(&subs, 0, sizeof(subs_info_t));
++	node = node->next;
++	if(node == NULL)
++		return 0;
++
++	force_socket = node->value;
++	if(force_socket.s== NULL || force_socket.len== 0) {
++		LM_ERR("invalid force_socket parameter\n" );
++		return init_mi_tree(400, "Bad forced socket", 17);
++	}
++
++	node = node->next;
++	if(node == NULL) {
++		LM_WARN("No extra header parameter\n");
++	} else if (node->next!=NULL) {
++		LM_ERR("Too much or too many parameters\n");
++		return 0;
++	} else {
++		extra = node->value;
++		subs.extra_headers= &extra;
++	}
+ 
+ 	subs.pres_uri= &pres_uri;
++	subs.pres_uri= &pres_uri;
+ 
+ 	subs.watcher_uri= &watcher_uri;
++	subs.force_socket = &force_socket ;
+ 
+ 	subs.contact= &watcher_uri;
+ 
+ 	subs.expires= exp;
+ 	subs.source_flag |= MI_SUBSCRIBE;
+ 	subs.event= get_event_flag(&event);
++
+ 	if(subs.event< 0)
+ 	{
+ 		LM_ERR("unkown event\n");
+diff --git a/modules/sms/sms_funcs.c b/modules/sms/sms_funcs.c
+index f3587e1..fb1d970 100644
+--- a/modules/sms/sms_funcs.c
++++ b/modules/sms/sms_funcs.c
+@@ -287,6 +287,7 @@ int send_sip_msg_request(str *to, str *from_user, str *body)
+ 			&hdrs,                    /* Additional headers including CRLF */
+ 			body,                     /* Message body */
+ 			0,                        /* outbound uri */
++			0,                        /* Send socket */
+ 			0,                        /* Callback function */
+ 			0,                        /* Callback parameter */
+ 			0
+diff --git a/modules/tm/uac.c b/modules/tm/uac.c
+index ef1bb43..d11ec82 100644
+--- a/modules/tm/uac.c
++++ b/modules/tm/uac.c
+@@ -555,7 +555,7 @@ err:
+ /*
+  * Send a transactional request, no dialogs involved
+  */
+-int request(str* m, str* ruri, str* to, str* from, str* h, str* b, str *oburi,
++int request(str* m, str* ruri, str* to, str* from, str* h, str* b, str *oburi, str *send_sock,
+ 				transaction_cb cb, void* cbp,release_tmcb_param release_func)
+ {
+ 	str callid, fromtag;
+@@ -579,6 +579,21 @@ int request(str* m, str* ruri, str* to, str* from, str* h, str* b, str *oburi,
+ 	}
+ 
+ 	if (oburi && oburi->s) dialog->hooks.next_hop = oburi;
++	if (send_sock && send_sock->s) {
++	        str host;
++	        int port, proto;
++        	if (parse_phostport(send_sock->s,
++        	                send_sock->len,
++        	                &host.s, &host.len,
++        	                &port, &proto)<0) {
++        	        LM_ERR("cannot parse forced socket [%.*s]\n",
++        	                send_sock->len, send_sock->s);
++        	} else {
++        	        dialog->send_sock = grep_sock_info(&host,
++        	                        (unsigned short) port,
++        	                        (unsigned short) proto);
++        	}
++	}
+ 
+ 	w_calculate_hooks(dialog);
+ 
+@@ -591,7 +606,6 @@ err:
+ 	return -1;
+ }
+ 
+-
+ void setlocalTholder(struct cell** holder)
+ {
+ 	last_localT = holder;
+diff --git a/modules/tm/uac.h b/modules/tm/uac.h
+index c9ce90c..705e1d6 100644
+--- a/modules/tm/uac.h
++++ b/modules/tm/uac.h
+@@ -45,11 +45,12 @@ typedef int (*reqwith_t)(str* m, str* h, str* b, dlg_t* d,
+ 		transaction_cb c, void* cp, release_tmcb_param release_func);
+ typedef int (*reqout_t)(str* m, str* t, str* f, str* h, str* b, dlg_t** d,
+ 		transaction_cb c, void* cp, release_tmcb_param release_func);
+-typedef int (*req_t)(str* m, str* ru, str* t, str* f, str* h, str* b, str *obu,
++typedef int (*req_t)(str* m, str* ru, str* t, str* f, str* h, str* b, str *obu, str *send_sock,
+ 		transaction_cb c, void* cp,release_tmcb_param release_func);
+ 
+ typedef void (*set_localT_holder_f)(struct cell**);
+ 
++
+ /*
+  * Generate a fromtag based on given Call-ID
+  */
+@@ -86,7 +87,7 @@ int req_outside(str* m, str* t, str* f, str* h, str* b, dlg_t** d,
+ /*
+  * Send a transactional request, no dialogs involved
+  */
+-int request(str* m, str* ruri, str* to, str* from, str* h, str* b, str *oburi,
++int request(str* m, str* ruri, str* to, str* from, str* h, str* b, str *oburi, str *send_sock,
+ 		transaction_cb c, void* cp, release_tmcb_param release_func);
+ 
+ /*
+diff --git a/modules/usrloc/ul_mi.c b/modules/usrloc/ul_mi.c
+index 2931290..0ef6c56 100644
+--- a/modules/usrloc/ul_mi.c
++++ b/modules/usrloc/ul_mi.c
+@@ -331,7 +331,6 @@ struct mi_root* mi_usrloc_rm_contact(struct mi_root *cmd, void *param)
+ 	return init_mi_tree( 200, MI_OK_S, MI_OK_LEN);
+ }
+ 
+-
+ struct mi_root* mi_usrloc_dump(struct mi_root *cmd, void *param)
+ {
+ 	struct mi_root *rpl_tree;
+@@ -428,6 +427,102 @@ error:
+ }
+ 
+ 
++struct mi_root* mi_usrloc_delete(struct mi_root *cmd, void *param)
++{
++	struct mi_root *rpl_tree;
++	struct mi_node *rpl;
++	struct mi_node *node;
++	struct mi_attr *attr;
++	struct urecord* r;
++	dlist_t* dl;
++	udomain_t* dom;
++	time_t t;
++	char *p;
++	int len;
++	int n;
++	int i;
++	int short_dump;
++	map_iterator_t it;
++	void ** dest;
++
++	node = cmd->node.kids;
++	if (node && node->next)
++		return init_mi_tree( 400, MI_MISSING_PARM_S, MI_MISSING_PARM_LEN);
++
++	if (node && node->value.len==5 && !strncasecmp(node->value.s, "brief", 5)){
++		/* short version */
++		short_dump = 1;
++	} else {
++		short_dump = 0;
++	}
++
++	rpl_tree = init_mi_tree( 200, MI_OK_S, MI_OK_LEN);
++	if (rpl_tree==NULL)
++		return 0;
++	rpl = &rpl_tree->node;
++	/* all domains go under this node as array */
++	rpl->flags |= MI_IS_ARRAY;
++	t = time(0);
++
++	for( dl=root ; dl ; dl=dl->next ) {
++		/* add a domain node */
++		node = add_mi_node_child( rpl, MI_IS_ARRAY|MI_NOT_COMPLETED,
++					"Domain", 6, dl->name.s, dl->name.len);
++		if (node==0)
++			goto error;
++
++		dom = dl->d;
++		/* add some attributes to the domain node */
++		p= int2str((unsigned long)dom->size, &len);
++		attr = add_mi_attr( node, MI_DUP_VALUE, "table", 5, p, len);
++		if (attr==0)
++			goto error;
++
++		/* add the entries per hash */
++		for(i=0,n=0; i<dom->size; i++) {
++			lock_ulslot( dom, i);
++
++
++			for ( map_first( dom->table[i].records, &it);
++				iterator_is_valid(&it);
++				iterator_next(&it) ) {
++
++				dest = iterator_val(&it);
++				if( dest == NULL )
++					goto error_unlock;
++				r =( urecord_t * ) *dest;
++
++
++				/* add entry */
++				if (mi_add_aor_node( node, r, t, short_dump)!=0)
++					goto error_unlock;
++				n++;
++				/* at each 50 AORs, flush the tree */
++				if ( (n % 50) == 0 )
++					flush_mi_tree(rpl_tree);
++			}
++
++			unlock_ulslot( dom, i);
++		}
++
++		/* add more attributes to the domain node */
++		p= int2str((unsigned long)n, &len);
++		attr = add_mi_attr( node, MI_DUP_VALUE, "records", 7, p, len);
++		if (attr==0)
++			goto error;
++
++	}
++
++	return rpl_tree;
++
++error_unlock:
++	unlock_ulslot( dom, i);
++error:
++	free_mi_tree(rpl_tree);
++	return 0;
++}
++
++
+ struct mi_root* mi_usrloc_flush(struct mi_root *cmd, void *param)
+ {
+ 	struct mi_root *rpl_tree;
+@@ -538,7 +633,6 @@ struct mi_root* mi_usrloc_add(struct mi_root *cmd, void *param)
+ 
+ 	if (c) {
+ 		/* update contact record */
+-		ci.callid = &mi_ul_cid;
+ 		ci.cseq = c->cseq;
+ 		if (update_ucontact( r, c, &ci, 0) < 0)
+ 			goto release_error;
+diff --git a/modules/xmpp/xmpp.c b/modules/xmpp/xmpp.c
+index 132dd47..1ad07c0 100644
+--- a/modules/xmpp/xmpp.c
++++ b/modules/xmpp/xmpp.c
+@@ -288,6 +288,7 @@ int xmpp_send_sip_msg(char *from, char *to, char *msg)
+ 			&hdr,                           /* Optional headers */
+ 			&msgstr,                        /* Message body */
+ 	(outbound_proxy.s)?&outbound_proxy:NULL,/* Outbound proxy*/
++			NULL,             /* Send Socket */
+ 			0,                              /* Callback function */
+ 			0,
+ 			0                               /* Callback parameter */
+-- 
+1.7.1
+
