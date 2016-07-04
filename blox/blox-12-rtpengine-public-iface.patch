@@ -1,0 +1,25 @@
+From f1eaad89d5bd90aa6f2c398d4183edb0588c3f28 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Mon, 4 Jul 2016 05:30:58 -0700
+Subject: [PATCH] Added rtpengine to public and external interface
+
+---
+ modules/rtpengine/rtpengine.c |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/modules/rtpengine/rtpengine.c b/modules/rtpengine/rtpengine.c
+index c804d43..e714758 100644
+--- a/modules/rtpengine/rtpengine.c
++++ b/modules/rtpengine/rtpengine.c
+@@ -1060,6 +1060,8 @@ static int parse_flags(struct ng_flags_parse *ng_flags, struct sip_msg *msg, enu
+ 					bencode_list_add_string(ng_flags->direction, "internal");
+ 				else if (str_eq(&key, "external"))
+ 					bencode_list_add_string(ng_flags->direction, "external");
++				else if (str_eq(&key, "publicif"))
++					bencode_list_add_string(ng_flags->direction, "publicif");
+ 				else if (str_eq(&key, "RTP/AVPF"))
+ 					ng_flags->transport = 0x102;
+ 				else if (str_eq(&key, "RTP/SAVP"))
+-- 
+1.7.1
+
