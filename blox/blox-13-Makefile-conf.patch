@@ -85,7 +85,7 @@ index 0000000..07fdb34
 +
 +include_modules?= 
 +
-+#DEFS+= -DPKG_MALLOC #Uses a faster malloc (exclusive w/ USE_SHM_MEM)
++DEFS+= -DPKG_MALLOC #Uses a faster malloc (exclusive w/ USE_SHM_MEM)
 +DEFS+= -DSHM_MEM #Compiles in shared mem. support, needed by some modules and USE_SHM_MEM
 +DEFS+= -DSHM_MMAP #Use mmap instead of SYSV shared memory
 +DEFS+= -DUSE_IPV6 #Compile in support for IPv6
@@ -94,8 +94,8 @@ index 0000000..07fdb34
 +DEFS+= -DSTATISTICS #Enables the statistics manager
 +DEFS+= -DCHANGEABLE_DEBUG_LEVEL #Enables support for changeable debug level at runtime
 +DEFS+= -DHAVE_RESOLV_RES #Support for changing some of the resolver parameters
-+DEFS+= -DHP_MALLOC #High performance allocator with fine-grained locking
-+#DEFS+= -DF_MALLOC #An even faster allocator. Not recommended for debugging
++#DEFS+= -DHP_MALLOC #High performance allocator with fine-grained locking
++DEFS+= -DF_MALLOC #An even faster allocator. Not recommended for debugging
 +#DEFS+= -DF_MALLOC_OPTIMIZATIONS #Remove all internal checks in F_MALLOC
 +DEFS+= -DUSE_TCP #Compiles in TCP support 
 +#DEFS+= -DUSE_TLS #Compiles in TLS support
