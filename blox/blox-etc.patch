@@ -23,13 +23,15 @@ new file mode 100644
 index 0000000..5049e02
 --- /dev/null
 +++ b/etc/opensips.logrotate
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,10 @@
 +/var/log/opensips.log
 +/var/log/lcr.log {
 +    size 100M
++    rotate 4
++    create 640 root root
 +    sharedscripts
 +    postrotate
-+	/bin/kill -HUP `cat /var/run/syslogd.pid 2>/dev/null` 2>/dev/null || true
++	/bin/kill -HUP `cat /var/run/syslogd.pid /var/run/rsyslogd.pid 2>/dev/null` 2>/dev/null || true
 +    endscript
 +}
 -- 
