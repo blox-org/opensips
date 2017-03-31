@@ -1,0 +1,219 @@
+From 70e3b12747faa382bc394648b99bab192082f4de Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Fri, 31 Mar 2017 06:23:50 +0000
+Subject: support for multipart parsing sipmsgops module
+
+---
+ modules/sipmsgops/sipmsgops.c |  112 +++++++++++++++++++++++++++++++++++++++++
+ msg_translator.c              |   51 +++++++++++++++++++
+ parser/parse_content.h        |    2 +
+ 3 files changed, 165 insertions(+)
+
+diff --git a/modules/sipmsgops/sipmsgops.c b/modules/sipmsgops/sipmsgops.c
+index b24475a..3a397ea 100644
+--- a/modules/sipmsgops/sipmsgops.c
++++ b/modules/sipmsgops/sipmsgops.c
+@@ -322,6 +322,7 @@ static inline int find_line_start(char *text, unsigned int text_len,
+ }
+ 
+ 
++#if 0
+ /* Filters multipart body by leaving out everything else except
+  * first body part of given content type. */
+ static int filter_body_f(struct sip_msg* msg, char* _content_type,
+@@ -385,6 +386,117 @@ static int filter_body_f(struct sip_msg* msg, char* _content_type,
+ 	}
+ 	return -1;
+ }
++#else
++
++static int check_multipart(struct sip_msg *msg)
++{
++	int mime;
++
++	/* the function search for and parses the Content-Type hdr */
++	mime = parse_content_type_hdr (msg);
++	if(mime<0) {
++		LM_ERR("failed to extract content type hdr\n");
++		return -1;
++	}
++	if(mime!=MIMETYPE(MULTIPART,MIXED)) return 0;
++	return 1;
++}
++
++/* Filters multipart/mixed body by leaving out everything else except
++ * first body part of given content type. */
++static int filter_body_f(struct sip_msg* msg, char* _content_type,
++			 char* ignored)
++{
++	char *start;
++	unsigned int len;
++	str *content_type, body;
++	str boundary = {0,0};
++
++	if ( get_body(msg,&body)!=0 || body.len==0) {
++		LM_DBG("message body has zero length\n");
++		return -1;
++	}
++	if (body.s == 0) {
++		LM_ERR("failed to get the message body\n");
++		return -1;
++	}
++	body.len = msg->len - (int)(body.s - msg->buf);
++	if (body.len == 0) {
++		LM_DBG("message body has zero length\n");
++		return -1;
++	}
++
++	if(check_multipart(msg)!=1) {
++		LM_WARN("body not multipart\n");
++		return -1;
++	}
++	if(get_boundary(msg, &boundary)!=0) {
++		return -1;
++	}
++	content_type = (str *)_content_type;
++	start = body.s;
++	len = body.len;
++
++	while (find_line_start("Content-Type: ", 14, &start, &len))
++	{
++		start = start + 14;
++		len = len - 14;
++		LM_DBG("line: [%.*s]\n", len, start);
++		if (len > content_type->len + 2) {
++			if (strncasecmp(start, content_type->s, content_type->len)== 0)
++			{
++				LM_DBG("found content type %.*s\n",
++					content_type->len, content_type->s);
++				start = start + content_type->len;
++				if ((*start != 13) || (*(start + 1) != 10))
++				{
++					LM_ERR("no CRLF found after content type\n");
++					goto err;
++				}
++				start = start + 2;
++				len = len - content_type->len - 2;
++				while ((len > 0) && ((*start == 13) || (*start == 10)))
++				{
++					len = len - 1;
++					start = start + 1;
++				}
++				if (del_lump(msg, body.s - msg->buf, start - body.s, 0)== 0)
++				{
++					LM_ERR("deleting lump <%.*s> failed\n",
++					(int)(start - body.s), body.s);
++					goto err;
++				}
++				if (find_line_start(boundary.s, boundary.len, &start,
++					&len))
++				{
++					/* we need to remove \r\n too */
++					if (del_lump(msg, (start-2) - msg->buf, len+2, 0) == 0)
++					{
++						LM_ERR("deleting lump <%.*s> failed\n", len, start);
++						goto err;
++					}
++					else
++					{
++						pkg_free(boundary.s);
++						return 1;
++					}
++				}
++				else
++				{
++					LM_ERR("boundary not found after content\n");
++					goto err;
++				}
++			}
++		} else {
++			goto err;
++		}
++	}
++ err:
++	if(boundary.s) pkg_free(boundary.s);
++	return -1;
++}
++
++#endif
+ 
+ int get_pvs_header_value(struct sip_msg *msg, gparam_p gp, pv_value_p ret)
+ {
+diff --git a/msg_translator.c b/msg_translator.c
+index 45fcecb..1296968 100644
+--- a/msg_translator.c
++++ b/msg_translator.c
+@@ -1343,6 +1343,57 @@ int is_del_via1_lump(struct sip_msg* msg)
+ 	return 0;
+ }
+ 
++/**
++ * returns the boundary defined by the Content-Type
++ * header
++ */
++int get_boundary(struct sip_msg* msg, str* boundary)
++{
++	str params;
++	param_t *p, *list;
++	param_hooks_t hooks;
++
++	params.s = memchr(msg->content_type->body.s, ';',
++		msg->content_type->body.len);
++	if (params.s == NULL)
++	{
++		LM_INFO("Content-Type hdr has no params <%.*s>\n",
++				msg->content_type->body.len, msg->content_type->body.s);
++		return -1;
++	}
++	params.len = msg->content_type->body.len -
++		(params.s - msg->content_type->body.s);
++	if (parse_params(&params, CLASS_ANY, &hooks, &list) < 0)
++	{
++		LM_ERR("while parsing Content-Type params\n");
++		return -1;
++	}
++	boundary->s = NULL;
++	boundary->len = 0;
++	for (p = list; p; p = p->next) {
++		if ((p->name.len == 8)
++			&& (strncasecmp(p->name.s, "boundary", 8) == 0))
++		{
++			boundary->s = pkg_malloc(p->body.len + 2);
++			if (boundary->s == NULL)
++			{
++				free_params(list);
++				LM_ERR("no memory for boundary string\n");
++				return -1;
++			}
++			*(boundary->s) = '-';
++			*(boundary->s + 1) = '-';
++			memcpy(boundary->s + 2, p->body.s, p->body.len);
++			boundary->len = 2 + p->body.len;
++			LM_DBG("boundary is <%.*s>\n", boundary->len, boundary->s);
++			break;
++		}
++	}
++	free_params(list);
++	return 0;
++}
++
++
+ char * build_req_buf_from_sip_req( struct sip_msg* msg,
+ 								unsigned int *returned_len,
+ 								struct socket_info* send_sock, int proto,
+diff --git a/parser/parse_content.h b/parser/parse_content.h
+index cc527ba..85e682f 100644
+--- a/parser/parse_content.h
++++ b/parser/parse_content.h
+@@ -67,6 +67,8 @@ struct mime_type {
+ #define SUBTYPE_ALL          0xfe
+ #define SUBTYPE_UNKNOWN      0xff
+ 
++/*! \brief taken from PA module - will be useful here */
++#define MIMETYPE(x_,y_) ((TYPE_##x_ << 16) | (SUBTYPE_##y_))
+ 
+ /*
+  * Maximum number of mimes allowed in Accept header
+-- 
+1.7.9.5
+
