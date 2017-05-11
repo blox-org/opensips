@@ -1,0 +1,25 @@
+From 594f6b314792f7904c27b26a17d5c4e154fec469 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Thu, 11 May 2017 02:32:12 -0700
+Subject: Changed reply '100 Giving a try' to '100 Trying'
+
+---
+ modules/tm/t_funcs.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/modules/tm/t_funcs.c b/modules/tm/t_funcs.c
+index 01d0047..1a05824 100644
+--- a/modules/tm/t_funcs.c
++++ b/modules/tm/t_funcs.c
+@@ -55,7 +55,7 @@
+ #include "t_lookup.h"
+ #include "config.h"
+ 
+-static str relay_reason_100 = str_init("Giving a try");
++static str relay_reason_100 = str_init("Trying");
+ 
+ 
+ /* ----------------------------------------------------- */
+-- 
+1.7.1
+
