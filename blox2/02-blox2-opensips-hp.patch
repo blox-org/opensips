@@ -1,0 +1,28 @@
+From b5abe5076fd1701efc7d886cf2a45aa71f940253 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Wed, 9 Aug 2017 07:10:29 -0700
+Subject: opensips to run with high priority
+
+---
+ scripts/opensipsctl |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/opensipsctl b/scripts/opensipsctl
+index d8e787e..ad21241 100755
+--- a/scripts/opensipsctl
++++ b/scripts/opensipsctl
+@@ -1871,9 +1871,9 @@ opensips_start() {
+ 		exit 1
+ 	fi
+ 	if [ $SYSLOG = 1 ] ; then
+-		$OSIPSBIN -P $PID_FILE $STARTOPTIONS 1>/dev/null 2>/dev/null
++		nice -n -20 $OSIPSBIN -P $PID_FILE $STARTOPTIONS 1>/dev/null 2>/dev/null
+ 	else
+-	 	$OSIPSBIN -P $PID_FILE -E $STARTOPTIONS
++	 	nice -n -20 $OSIPSBIN -P $PID_FILE -E $STARTOPTIONS
+ 	fi
+ 	sleep 3
+ 	if [ ! -s $PID_FILE ] ; then
+-- 
+1.7.1
+
