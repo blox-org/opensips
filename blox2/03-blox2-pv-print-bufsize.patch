@@ -1,0 +1,25 @@
+From 789592178cda4bdd6b2252fecf19034a6e6ae20c Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Thu, 10 Aug 2017 06:41:19 -0700
+Subject: PV_PRINT_BUF_SIZE increased
+
+---
+ pvar.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/pvar.c b/pvar.c
+index 4dd0ee5..0726d8a 100644
+--- a/pvar.c
++++ b/pvar.c
+@@ -4413,7 +4413,7 @@ void pv_value_destroy(pv_value_t *val)
+ 	memset(val, 0, sizeof(pv_value_t));
+ }
+ 
+-#define PV_PRINT_BUF_SIZE  1024
++#define PV_PRINT_BUF_SIZE  (1024*2)
+ #define PV_PRINT_BUF_NO    7
+ /*IMPORTANT NOTE - even if the function prints and returns a static buffer, it
+  * has built-in support for 3 levels of nesting (or concurrent usage).
+-- 
+1.7.1
+
