@@ -1,0 +1,126 @@
+From 1c5d9f75cf0064710ba4b7e021dcf447c105f234 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Mon, 28 Aug 2017 02:16:12 -0700
+Subject: Added patch for call center crash and wrapup logic
+
+---
+ modules/call_center/call_center.c |   27 ++++++++++++++++++---------
+ modules/call_center/cc_data.c     |    6 ++++--
+ modules/call_center/cc_data.h     |    2 ++
+ 3 files changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/modules/call_center/call_center.c b/modules/call_center/call_center.c
+index bc0cec1..a460477 100755
+--- a/modules/call_center/call_center.c
++++ b/modules/call_center/call_center.c
+@@ -918,6 +918,7 @@ static int w_agent_login(struct sip_msg *req, char *agent_v, char *state_v)
+ static void cc_timer_agents(unsigned int ticks, void* param)
+ {
+ 	struct cc_agent *agent, *prev_agent, *tmp_ag;
++	struct cc_agent *agent_call ;
+ 	struct cc_call  *call;
+ 	str out;
+ 	str dest;
+@@ -926,12 +927,15 @@ static void cc_timer_agents(unsigned int ticks, void* param)
+ 		return;
+ 
+ 	do {
+-
++		int fixed ;
+ 		lock_get( data->lock );
+ 
++repeat_fix:
++		fixed = 0;
+ 		prev_agent = data->agents[CC_AG_ONLINE];
+ 		agent = data->agents[CC_AG_ONLINE];
+ 		call = NULL;
++		agent_call = NULL ;
+ 
+ 		/* iterate all agents*/
+ 		do {
+@@ -964,18 +968,12 @@ static void cc_timer_agents(unsigned int ticks, void* param)
+ 							agent->next = NULL;
+ 							data->last_online_agent = agent;
+ 					}
++					fixed = 1;
+ 					goto next_ag;
+ 				}
+ 			}
++			if(!agent_call) agent_call = agent;
+ 
+-			/* for free agents -> check for calls */
+-			if ( (data->queue.calls_no!=0) && (agent->state==CC_AGENT_FREE) ) {
+-				call = cc_queue_pop_call_for_agent( data, agent);
+-				if (call) {
+-					/* found a call for the agent */
+-					break;
+-				}
+-			}
+ next_ag:
+ 			/* next agent */
+ 			prev_agent = agent;
+@@ -983,6 +981,17 @@ next_ag:
+ 
+ 		}while(agent);
+ 
++		if(fixed)
++			goto repeat_fix ;
++
++		if(agent_call) {
++			agent = agent_call ;
++			/* for free agents -> check for calls */
++			if ( (data->queue.calls_no!=0) && (agent->state==CC_AGENT_FREE) ) {
++				call = cc_queue_pop_call_for_agent( data, agent);
++			}
++		}
++
+ 		lock_release( data->lock );
+ 
+ 		/* no locking here */
+diff --git a/modules/call_center/cc_data.c b/modules/call_center/cc_data.c
+index 39a366c..c81d489 100755
+--- a/modules/call_center/cc_data.c
++++ b/modules/call_center/cc_data.c
+@@ -123,7 +123,7 @@ struct cc_data* init_cc_data(void)
+ 	}
+ 
+ 	/* set of locks for calls */
+-	if ( (data->call_locks=lock_set_alloc(512))==0) {
++	if ( (data->call_locks=lock_set_alloc(MAX_CC_CALLS))==0) {
+ 		LM_CRIT("failed to alloc set of call locks\n");
+ 		goto error;
+ 	}
+@@ -713,7 +713,7 @@ struct cc_call* new_cc_call(struct cc_data *data, struct cc_flow *flow, str *dn,
+ 
+ 	/* attache a lock */
+ 	call->lock_idx = data->next_lock_to_use++;
+-	if (data->next_lock_to_use==512)
++	if (data->next_lock_to_use==MAX_CC_CALLS)
+ 		data->next_lock_to_use = 0;
+ 
+ 	cc_list_insert_call( data, call );
+@@ -926,6 +926,8 @@ void cc_queue_push_call(struct cc_data *data, struct cc_call *call, int top)
+ 		abort();
+ 	}
+ 
++	//lock_set_get( data->call_locks, call->lock_idx );
++	//lock_set_release( data->call_locks, call->lock_idx );
+ 	if (top) {
+ 		/* add the call in the very top of the queue */
+ 		call_it = NULL;
+diff --git a/modules/call_center/cc_data.h b/modules/call_center/cc_data.h
+index e2cf62c..b640354 100755
+--- a/modules/call_center/cc_data.h
++++ b/modules/call_center/cc_data.h
+@@ -71,6 +71,8 @@ struct cc_flow {
+ 
+ #define MAX_SKILLS_PER_AGENT 32
+ 
++#define MAX_CC_CALLS (512*2)
++
+ typedef enum {
+ 	CC_AGENT_FREE,
+ 	CC_AGENT_WRAPUP,
+-- 
+1.7.1
+
