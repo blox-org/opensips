@@ -2571,7 +2571,7 @@ index 076ea21..9792e47 100755
  		mecho "Creating CA self-signed certificate"
  		( cd $CA_PATH; openssl req -config $CA_BASE/$CA_CONF -x509 -newkey \
 -			rsa:2048 -days 365 -out ./cacert.pem -outform PEM )
-+			rsa:$CABIT -out ./cacert.pem -outform PEM -passin env:CAPASS -passout env:CAPASS)
++			rsa:$CABIT -days ${VALID_DAYS:-365} -out ./cacert.pem -outform PEM -passin env:CAPASS -passout env:CAPASS)
  		if [ $? -ne 0 ] ; then
  			merr "Failed to create self-signed certificate"
  			exit 1
