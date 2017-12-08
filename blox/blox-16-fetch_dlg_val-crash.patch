@@ -1,0 +1,35 @@
+From 3a386c6f88d20de85e9e2b922ea856a43d721539 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Fri, 1 Dec 2017 02:28:51 -0800
+Subject: Adding patch to fix: fetch_dlg_value realloc crash
+
+---
+ modules/dialog/dlg_vals.c |    5 +++++
+ 1 files changed, 5 insertions(+), 0 deletions(-)
+
+diff --git a/modules/dialog/dlg_vals.c b/modules/dialog/dlg_vals.c
+index 690b949..33c5992 100644
+--- a/modules/dialog/dlg_vals.c
++++ b/modules/dialog/dlg_vals.c
+@@ -133,6 +133,7 @@ int store_dlg_value(struct dlg_cell *dlg, str *name, str *val)
+ 	return ret;
+ }
+ 
++#define MAX_DLG_VALUE (1024*8)
+ static str val_buf = { NULL, 0};
+ static int val_buf_size;
+ 
+@@ -148,6 +149,10 @@ int fetch_dlg_value(struct dlg_cell *dlg, str *name,str *ival, int val_has_buf)
+ 	id = _get_name_id(name);
+ 
+ 	if (!val_has_buf) {
++		if(val_buf.s == NULL) { /* allocate to max avoid fragments */
++			val_buf.s = (char*)pkg_malloc(MAX_DLG_VALUE);
++			val_buf_size = MAX_DLG_VALUE ;
++		}
+ 		val = &val_buf;
+ 		val->len = val_buf_size;
+ 	} else
+-- 
+1.7.1
+
