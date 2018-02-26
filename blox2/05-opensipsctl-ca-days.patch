@@ -1,0 +1,34 @@
+From c188bc74e386bf12092f1c4de372594b9907c805 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Mon, 26 Feb 2018 13:42:56 +0000
+Subject: Added patch for CA Cert sign with valid days
+
+---
+ scripts/opensipsctl | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/opensipsctl b/scripts/opensipsctl
+index 36421e2..03c5b05 100755
+--- a/scripts/opensipsctl
++++ b/scripts/opensipsctl
+@@ -46,7 +46,7 @@ fi
+ ### force values for variables in this section
+ # you better set the variables in ~/.opensipsctlrc
+ if [ -z $ETCDIR ] ; then
+-	ETCDIR="/usr/local/etc/opensips"
++	ETCDIR="/usr/local/etc/opensips/"
+ else
+ 	# Fix relative paths
+ 	[ "${ETCDIR:0:1}" != "/" ] && ETCDIR=$PWD/$ETCDIR
+@@ -2544,7 +2544,7 @@ tls_ca() {
+ 
+ 		mecho "Creating CA self-signed certificate"
+ 		( cd $CA_PATH; openssl req -config $CA_BASE/$CA_CONF -x509 -newkey \
+-			rsa:$CABIT -out ./cacert.pem -outform PEM -passin env:CAPASS -passout env:CAPASS)
++			rsa:$CABIT  -days ${VALID_DAYS:-365} -out ./cacert.pem -outform PEM -passin env:CAPASS -passout env:CAPASS)
+ 		if [ $? -ne 0 ] ; then
+ 			merr "Failed to create self-signed certificate"
+ 			exit 1
+-- 
+1.8.3.1
+
