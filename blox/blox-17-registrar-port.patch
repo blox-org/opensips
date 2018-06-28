@@ -1,0 +1,28 @@
+From 6da01a97e245623565c76f1b8a21904584c87110 Mon Sep 17 00:00:00 2001
+From: Varadhan M <varadhan@cem-solutions.net>
+Date: Thu, 28 Jun 2018 08:03:08 -0700
+Subject: register AOR added to support domain with port
+
+---
+ modules/registrar/common.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/modules/registrar/common.c b/modules/registrar/common.c
+index 656037319..7f43b1592 100644
+--- a/modules/registrar/common.c
++++ b/modules/registrar/common.c
+@@ -185,6 +185,11 @@ int extract_aor(str* _uri, str* _a,str *sip_instance,str *call_id)
+ 			memcpy(aor_buf + _a->len, puri.host.s, puri.host.len);
+ 			_a->len += puri.host.len;
+ 		}
++		if(puri.port.len>0) {	
++			aor_buf[_a->len++] = ':';
++			memcpy(aor_buf + _a->len, puri.port.s, puri.port.len);
++			_a->len += puri.port.len;
++		}
+ 	}
+ 
+ 	if (case_sensitive && user_len) {
+-- 
+2.17.GIT
+
